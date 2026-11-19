@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Auto 라인트레이서</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#14171c">
+<style>
+  :root {
+    --bg: #14171c; --card: #1e232b; --line: #2c333d; --text: #e9edf2; --muted: #98a2b0;
+    --go: #2e9d5b; --stop: #d0483f; --accent: #3f7fe0; --warn: #e0a13f;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.4 system-ui, -apple-system, "Malgun Gothic", "Noto Sans KR", sans-serif; }
+  body { padding: 12px 16px 40px; max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 18px; margin: 4px 0 8px; }
+  .status { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  .status b { color: var(--text); font-weight: 600; }
+  .view { position: relative; background: #000; border-radius: 10px; overflow: hidden; min-height: 120px; }
+  #view { display: block; width: 100%; height: auto; }
+  #lineinfo { position: absolute; left: 8px; top: 8px; padding: 3px 8px; border-radius: 6px;
+    background: rgba(0,0,0,.6); font-size: 14px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0; }
+  button { font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px 8px; touch-action: manipulation; }
+  button:disabled { opacity: .4; }
+  button.go { background: var(--go); border-color: var(--go); font-weight: 700; }
+  button.stop { background: var(--stop); border-color: var(--stop); font-weight: 700; }
+  button.on { outline: 2px solid var(--accent); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 10px 0; }
+  summary { cursor: pointer; font-weight: 600; padding: 2px 0; }
+  label.sl { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; margin: 10px 0 2px; font-size: 14px; }
+  label.sl input[type=range] { grid-column: 1 / -1; width: 100%; }
+  label.ck { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0; font-size: 14px; }
+  .pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0; user-select: none; }
+  .pad button { padding: 18px 4px; touch-action: none; -webkit-user-select: none; user-select: none; }
+  .hint { color: var(--muted); font-size: 13px; margin: 4px 0; }
+  pre#log { white-space: pre-wrap; font-size: 12px; color: var(--muted); max-height: 180px; overflow: auto; margin: 6px 0 0; }
+  #video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+<h1>Auto 카메라 라인트레이서</h1>
+<div class="status">
+  <span>허브 <b id="stHub">연결 안 됨</b></span>
+  <span>카메라 <b id="stCam">꺼짐</b></span>
+  <span>응답 <b id="stLat">-</b></span>
+  <span>화면 <b id="stFps">-</b></span>
+</div>
+
+<div class="view">
+  <canvas id="view" width="320" height="240"></canvas>
+  <div id="lineinfo">카메라 꺼짐</div>
+</div>
+
+<div class="row">
+  <button id="btnHub">① 허브 연결</button>
+  <button id="btnCam">② 카메라 켜기</button>
+  <button id="btnGo" class="go">▶ 출발</button>
+  <button id="btnStop" class="stop">■ 정지</button>
+</div>
+
+<div class="card">
+  <label class="sl">속도 <span id="vSpeed"></span><input id="speed" type="range" min="100" max="500" step="10"></label>
+  <label class="sl">조향 세기 <span id="vKp"></span><input id="kp" type="range" min="0" max="2" step="0.05"></label>
+  <label class="sl">흔들림 억제 <span id="vKd"></span><input id="kd" type="range" min="0" max="3" step="0.1"></label>
+  <label class="sl">보는 영역 (화면 위에서부터 제외) <span id="vRoi"></span><input id="roiTop" type="range" min="0.1" max="0.8" step="0.05"></label>
+  <label class="ck"><input id="thrAuto" type="checkbox"> 검정 기준 자동</label>
+  <label class="sl" id="thrRow">검정 기준 (낮을수록 진한 검정만) <span id="vThr"></span><input id="thr" type="range" min="20" max="200" step="1"></label>
+  <p class="hint">빨간색으로 칠해진 곳이 "검정 테이프"로 인식된 부분이에요. 점 3개가 선 위에 있으면 정상.</p>
+</div>
+
+<details class="card" id="calib">
+  <summary>바퀴 방향 맞추기 (처음 한 번)</summary>
+  <p class="hint">누르고 있는 동안만 움직여요. 차가 반대로 가면 아래 칸을 체크하세요.</p>
+  <div class="pad">
+    <span></span><button data-dir="fwd">▲ 앞</button><span></span>
+    <button data-dir="left">⟲ 왼쪽</button><button data-dir="back">▼ 뒤</button><button data-dir="right">⟳ 오른쪽</button>
+  </div>
+  <label class="ck"><input id="invertFB" type="checkbox"> 앞뒤가 반대예요 ("▲ 앞"에 뒤로 감)</label>
+  <label class="ck"><input id="swapLR" type="checkbox"> 좌우가 반대예요 ("⟲ 왼쪽"에 오른쪽으로 돎)</label>
+  <label class="ck"><input id="steerInvert" type="checkbox"> 주행 중 선 반대쪽으로 꺾어요 (조향 반대)</label>
+</details>
+
+<details class="card">
+  <summary>기록</summary>
+  <pre id="log"></pre>
+</details>
+
+<video id="video" playsinline muted autoplay></video>
+<canvas id="proc" hidden></canvas>
+<canvas id="ov" hidden></canvas>
+
+<script src="core.js"></script>
+<script>
+'use strict';
+const C = SpikeCore;
+const $ = (id) => document.getElementById(id);
+const PROG_SLOT = 19, CMD_SLOT = 18;
+const MANUAL = { fwd: [150, 150], back: [-150, -150], left: [-100, 100], right: [100, -100] };
+const DEFAULTS = { speed: 200, kp: 0.9, kd: 1.0, roiTop: 0.4, thrAuto: true, thr: 90,
+                   swapLR: false, invertFB: false, steerInvert: false };
+const enc = (s) => new TextEncoder().encode(s);
+
+// ---------- settings (remembered on this phone) ----------
+let cfg = Object.assign({}, DEFAULTS);
+try { Object.assign(cfg, JSON.parse(localStorage.getItem('autoLineCfg') || '{}')); } catch (e) {}
+const saveCfg = () => { try { localStorage.setItem('autoLineCfg', JSON.stringify(cfg)); } catch (e) {} };
+
+function bindRange(id, valId, fmt) {
+  const el = $(id);
+  el.value = cfg[id];
+  const show = () => { $(valId).textContent = fmt(cfg[id]); };
+  el.addEventListener('input', () => { cfg[id] = parseFloat(el.value); show(); saveCfg(); });
+  show();
+}
+bindRange('speed', 'vSpeed', (v) => v + ' °/s');
+bindRange('kp', 'vKp', (v) => v.toFixed(2));
+bindRange('kd', 'vKd', (v) => v.toFixed(1));
+bindRange('roiTop', 'vRoi', (v) => Math.round(v * 100) + '%');
+bindRange('thr', 'vThr', (v) => String(v));
+for (const id of ['thrAuto', 'swapLR', 'invertFB', 'steerInvert']) {
+  const el = $(id);
+  el.checked = !!cfg[id];
+  el.addEventListener('change', () => { cfg[id] = el.checked; saveCfg(); updateUI(); });
+}
+
+// ---------- state ----------
+let hub = null, hubReady = false, senderRunning = false;
+let camOn = false, stream = null;
+let following = false, manual = null;
+let followCmd = [0, 0], lastFrameT = 0, lastProcT = 0;
+let errF = null, prevErrF = null, lastSeenT = -1e9, lastErrSign = 1;
+let seq = 0; const sentAt = new Map();
+let fpsCount = 0, fpsT = performance.now();
+let wakeLock = null;
+
+function log(t) {
+  const el = $('log');
+  const time = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+  el.textContent = `[${time}] ${t}\n` + el.textContent.slice(0, 4000);
+}
+const setText = (id, t) => { $(id).textContent = t; };
+
+function updateUI() {
+  $('btnHub').textContent = hub && hub.connected && !hubReady ? '① 허브 프로그램 다시 시작' : '① 허브 연결';
+  $('btnHub').disabled = hubReady;
+  $('btnCam').textContent = camOn ? '② 카메라 끄기' : '② 카메라 켜기';
+  $('btnGo').disabled = !(hubReady && camOn) || following;
+  $('btnGo').textContent = following ? '주행 중…' : '▶ 출발';
+  $('thrRow').style.display = cfg.thrAuto ? 'none' : '';
+}
+
+// ---------- hub ----------
+function onLine(line) {
+  const m = /^A(\d+)$/.exec(line);
+  if (m) {
+    const t = sentAt.get(+m[1]);
+    if (t != null) { setText('stLat', Math.round(performance.now() - t) + ' ms'); sentAt.delete(+m[1]); }
+    if (sentAt.size > 50) sentAt.clear();
+    return;
+  }
+  if (line === 'READY') log('허브 프로그램 시작됨');
+  else if (line === 'DEADMAN') log('명령이 끊겨서 허브가 스스로 멈췄어요');
+  else if (line === 'NO_WHEELS') log('A/B 포트에 모터가 없어요');
+  else if (line === 'BYE') log('허브 프로그램 종료');
+  else if (line) log('허브: ' + line);
+}
+
+function stopAll(reason) {
+  if (following && reason) log(reason);
+  following = false; manual = null;
+  releaseWake();
+  updateUI();
+}
+
+async function connectHub() {
+  if (!navigator.bluetooth) { log('이 브라우저는 블루투스를 못 써요. 안드로이드 Chrome에서 열어주세요.'); return; }
+  try {
+    if (!hub || !hub.connected) {
+      hub = new C.SpikeHub({
+        onLine,
+        onDisconnect: () => { hubReady = false; stopAll('허브 연결이 끊겼어요'); setText('stHub', '연결 끊김'); updateUI(); },
+        onProgramEnd: () => { hubReady = false; stopAll('허브 프로그램이 끝났어요'); setText('stHub', '프로그램 종료됨'); updateUI(); },
+      });
+      setText('stHub', '연결 중…');
+      const info = await hub.connect(); // shows the device chooser: pick "Auto"
+      log(`연결: ${hub.device.name || '(이름 없음)'} · 펌웨어 ${info.firmware}`);
+    }
+    setText('stHub', '프로그램 올리는 중…');
+    const code = enc(await (await fetch('hub_follow.py')).text());
+    await hub.writeFile(enc('0 0 0;'), CMD_SLOT);            // neutral command first
+    await hub.uploadProgram(code, PROG_SLOT);
+    await hub.startProgram(PROG_SLOT);
+    hubReady = true;
+    setText('stHub', '연결됨' + (hub.device.name ? ` (${hub.device.name})` : ''));
+    senderLoop();
+  } catch (e) {
+    log('허브 연결 실패: ' + e.message);
+    setText('stHub', hub && hub.connected ? '연결됨 (프로그램 없음)' : '연결 안 됨');
+  }
+  updateUI();
+}
+
+function desired(now) {
+  if (manual) return C.toPorts(manual[0], manual[1], cfg);
+  if (!following) return [0, 0];
+  if (now - lastFrameT > 400) return [0, 0];                // camera stalled -> stop
+  return followCmd;
+}
+
+async function senderLoop() {
+  if (senderRunning) return;
+  senderRunning = true;
+  let last = null, lastT = 0;
+  try {
+    while (hub && hub.connected && hubReady) {
+      const now = performance.now();
+      const want = desired(now);
+      const moving = want[0] !== 0 || want[1] !== 0;
+      const changed = !last || want[0] !== last[0] || want[1] !== last[1];
+      if ((changed && now - lastT >= 80) || (moving && now - lastT >= 250)) {
+        seq++;
+        sentAt.set(seq, now);
+        await hub.writeFile(enc(`${seq} ${want[0]} ${want[1]};`), CMD_SLOT);
+        last = want; lastT = now;
+      } else {
+        await C.sleep(20);
+      }
+    }
+  } catch (e) {
+    log('전송 오류: ' + e.message);
+  }
+  senderRunning = false;
+}
+
+// ---------- camera + vision ----------
+const video = $('video'), view = $('view'), proc = $('proc'), ov = $('ov');
+const vctx = view.getContext('2d'), pctx = proc.getContext('2d', { willReadFrequently: true }), octx = ov.getContext('2d');
+
+async function toggleCam() {
+  if (camOn) {
+    camOn = false; stopAll('카메라를 꺼서 멈췄어요');
+    stream && stream.getTracks().forEach((t) => t.stop());
+    setText('stCam', '꺼짐'); setText('lineinfo', '카메라 꺼짐'); updateUI();
+    return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } }, audio: false,
+    });
+    video.srcObject = stream;
+    await video.play();
+    camOn = true; setText('stCam', '켜짐');
+    requestAnimationFrame(frameLoop);
+  } catch (e) {
+    log('카메라 실패: ' + e.message);
+  }
+  updateUI();
+}
+
+const REASON = { 'low-contrast': '선 없음 (검정이 안 보임)', 'too-dark': '너무 어두움', 'no-line': '선 없음' };
+
+function frameLoop(ts) {
+  if (!camOn) return;
+  requestAnimationFrame(frameLoop);
+  if (ts - lastProcT < 60) return;                           // ~15 fps is plenty
+  const dt = lastProcT ? ts - lastProcT : 66;
+  lastProcT = ts;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || video.readyState < 2) return;
+
+  const s = 160 / Math.max(vw, vh), W = Math.round(vw * s), H = Math.round(vh * s);
+  if (proc.width !== W || proc.height !== H) { proc.width = ov.width = W; proc.height = ov.height = H; }
+  pctx.drawImage(video, 0, 0, W, H);
+  const px = pctx.getImageData(0, 0, W, H).data;
+  const gray = new Uint8Array(W * H);
+  for (let i = 0, j = 0; i < gray.length; i++, j += 4) gray[i] = (px[j] * 77 + px[j + 1] * 150 + px[j + 2] * 29) >> 8;
+
+  const det = C.detectLine(gray, W, H, { roiTop: cfg.roiTop, threshold: cfg.thrAuto ? null : cfg.thr });
+  lastFrameT = performance.now();
+
+  if (det.found) {
+    errF = errF == null ? det.error : errF * 0.4 + det.error * 0.6;
+    const out = C.control(errF, prevErrF, dt, cfg);
+    prevErrF = errF;
+    lastSeenT = lastFrameT;
+    if (errF !== 0) lastErrSign = Math.sign(errF);
+    followCmd = C.toPorts(out.left, out.right, cfg);
+  } else {
+    errF = prevErrF = null;
+    if (lastFrameT - lastSeenT < 1000) {                     // just lost it: turn toward where it was
+      const sp = cfg.speed * 0.4 * (cfg.steerInvert ? -lastErrSign : lastErrSign);
+      followCmd = C.toPorts(sp, -sp, cfg);
+    } else {
+      followCmd = [0, 0];
+      if (following && lastFrameT - lastSeenT < 1200) log('선을 잃어서 멈췄어요');
+    }
+  }
+  draw(det, gray, W, H);
+
+  setText('lineinfo', det.found
+    ? `선 ${det.error < -0.15 ? '왼쪽' : det.error > 0.15 ? '오른쪽' : '가운데'} (${Math.round(det.error * 100)})`
+    : REASON[det.reason] || '선 없음');
+  fpsCount++;
+  const now = performance.now();
+  if (now - fpsT > 1000) { setText('stFps', fpsCount + ' fps'); fpsCount = 0; fpsT = now; }
+}
+
+function draw(det, gray, W, H) {
+  const cw = view.clientWidth || 320, dpr = window.devicePixelRatio || 1;
+  const w = Math.round(cw * dpr), h = Math.round(cw * dpr * H / W);
+  if (view.width !== w || view.height !== h) { view.width = w; view.height = h; }
+  vctx.drawImage(video, 0, 0, w, h);
+  // dark-pixel mask (what counts as tape) in red
+  const img = octx.createImageData(W, H), d = img.data;
+  for (let y = det.y0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x;
+    if (gray[i] < det.thr) { const k = i * 4; d[k] = 255; d[k + 1] = 40; d[k + 2] = 40; d[k + 3] = 120; }
+  }
+  octx.putImageData(img, 0, 0);
+  vctx.imageSmoothingEnabled = false;
+  vctx.drawImage(ov, 0, 0, w, h);
+  const sx = w / W, sy = h / H;
+  vctx.lineWidth = 2 * dpr;
+  vctx.strokeStyle = 'rgba(255,255,255,.5)';
+  vctx.beginPath(); vctx.moveTo(0, det.y0 * sy); vctx.lineTo(w, det.y0 * sy); vctx.stroke();      // ROI top
+  vctx.setLineDash([6 * dpr, 6 * dpr]);
+  vctx.beginPath(); vctx.moveTo(w / 2, det.y0 * sy); vctx.lineTo(w / 2, h); vctx.stroke();         // centre
+  vctx.setLineDash([]);
+  for (const b of det.bands) {
+    if (b.cx == null) continue;
+    vctx.fillStyle = '#3fe07a';
+    vctx.beginPath(); vctx.arc((b.cx + 0.5) * sx, ((b.ya + b.yb) / 2) * sy, 6 * dpr, 0, Math.PI * 2); vctx.fill();
+  }
+  if (following) {
+    vctx.fillStyle = 'rgba(46,157,91,.9)';
+    vctx.fillRect(0, h - 6 * dpr, w, 6 * dpr);
+  }
+}
+
+// ---------- buttons ----------
+$('btnHub').addEventListener('click', connectHub);
+$('btnCam').addEventListener('click', toggleCam);
+$('btnGo').addEventListener('click', () => {
+  if (!hubReady || !camOn) return;
+  following = true; lastSeenT = -1e9; errF = prevErrF = null;
+  requestWake(); updateUI(); log('출발');
+});
+$('btnStop').addEventListener('click', () => stopAll('정지 버튼'));
+
+for (const b of document.querySelectorAll('.pad button')) {
+  const dir = b.dataset.dir;
+  const down = (e) => { e.preventDefault(); if (!hubReady) { log('먼저 허브를 연결하세요'); return; }
+    following = false; manual = MANUAL[dir]; b.classList.add('on'); try { b.setPointerCapture(e.pointerId); } catch (x) {} updateUI(); };
+  const up = () => { manual = null; b.classList.remove('on'); };
+  b.addEventListener('pointerdown', down);
+  b.addEventListener('pointerup', up);
+  b.addEventListener('pointercancel', up);
+  b.addEventListener('lostpointercapture', up);
+  b.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+
+// leaving the page (app switch, screen off) stops the car
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopAll('화면을 벗어나서 멈췄어요'); });
+
+async function requestWake() {
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+function releaseWake() { try { wakeLock && wakeLock.release(); } catch (e) {} wakeLock = null; }
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+updateUI();
+log('준비됨. ① 허브 연결 → 목록에서 "Auto" 선택 → ② 카메라 켜기 → ▶ 출발');
+</script>
+</body>
+</html>

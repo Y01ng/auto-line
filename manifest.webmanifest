@@ -1,0 +1,10 @@
+{
+  "name": "Auto 카메라 라인트레이서",
+  "short_name": "Auto 라인",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#14171c",
+  "theme_color": "#14171c",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
