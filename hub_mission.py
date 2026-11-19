@@ -5,8 +5,10 @@
 #                     While moving it prints odometry "O<leg> <deg>" every ~120 ms.
 #   M mm speed        straight move by wheel rotation (mm, - = backwards)      -> "D<seq> 1"
 #   T deg speed       turn in place by wheel rotation (deg, + = right)         -> "D<seq> 1"
-#   G dir power hold maxdeg   gripper at limited force (power = duty %) until it stops moving,
-#                             maxdeg is reached or 3 s pass; prints "GR <deg> <why>"  -> "D<seq> 1"
+#   G dir power hold maxdeg flag   gripper at limited force (power = duty %) until it stops moving,
+#                             maxdeg is reached or 3 s pass. flag 1 = opening (a stall marks "fully
+#                             open"), 2 = closing (maxdeg counted from fully open).
+#                             prints "GR <deg> <why> <deg from fully open>"       -> "D<seq> 1"
 #   S                 stop everything                                          -> "D<seq> 1"
 #   Q                 quit
 # Any new command aborts a running M / T / G ("D<seq> 0").
@@ -103,34 +105,50 @@ async def wheels(sa, sb, target, speed):
     return ok
 
 
-async def do_grip(g, direction, power, hold, maxdeg):
+GZ = {"open": None}     # gripper position at its fully-open end stop (set by an opening move that stalls)
+LEAD_LOOPS = 1          # stop this many 10 ms steps of travel before the angle limit (coasting)
+
+
+async def do_grip(g, direction, power, hold, maxdeg, flag):
     """Move the gripper with LIMITED force: power = motor duty in % (it cannot push harder than
     that), until it stops moving (object / end stop), maxdeg is reached, or 3 s pass.
-    Prints "GR <degrees moved> <stall|angle|time|cmd>"."""
+    flag 1 = opening move (a stall marks the fully-open position), flag 2 = closing move
+    (maxdeg is counted from that fully-open position), 0 = plain relative move.
+    Prints "GR <degrees moved> <stall|angle|time|cmd> <degrees from fully open or ?>"."""
     if g is None:
         return False
-    start = p0 = pos(g)
+    start = p0 = last = pos(g)
+    target = maxdeg
+    if flag == 2 and maxdeg > 0 and GZ["open"] is not None:
+        target = maxdeg - abs(start - GZ["open"])    # limit counted from the fully-open end stop
+        if target <= 2:
+            print("GR 0 angle " + str(abs(start - GZ["open"])))
+            return True
     t0 = moved = time.ticks_ms()
     try:
         motor.set_duty_cycle(g, sgn(direction) * max(0, min(100, power)) * 100)
     except Exception:
         motor.run(g, sgn(direction) * 250)           # firmware without duty control: speed mode
     why = "time"
+    n = 0
     while True:
-        await runloop.sleep_ms(20)
+        await runloop.sleep_ms(10)
         now = time.ticks_ms()
         p = pos(g)
+        lead = abs(p - last) * LEAD_LOOPS            # it coasts on after power is cut: stop early
+        last = p
         if abs(p - p0) > 2:
             p0, moved = p, now
         elif time.ticks_diff(now, moved) > 300:      # stopped moving: touching the object / end stop
             why = "stall"
             break
-        if maxdeg > 0 and abs(p - start) >= maxdeg:
+        if target > 0 and abs(p - start) + lead >= target:
             why = "angle"
             break
         if time.ticks_diff(now, t0) > 3000:
             break
-        if new_cmd():
+        n += 1
+        if n % 3 == 0 and new_cmd():
             why = "cmd"
             break
     if hold:
@@ -140,7 +158,11 @@ async def do_grip(g, direction, power, hold, maxdeg):
             motor.stop(g)
     else:
         motor.stop(g)
-    print("GR " + str(pos(g) - start) + " " + why)
+    await runloop.sleep_ms(150)                      # let it settle before measuring
+    if flag == 1 and why == "stall":
+        GZ["open"] = pos(g)                          # fully open: this is angle 0 from now on
+    rel = "?" if GZ["open"] is None else str(abs(pos(g) - GZ["open"]))
+    print("GR " + str(pos(g) - start) + " " + why + " " + rel)
     return why != "cmd"
 
 
@@ -200,7 +222,7 @@ async def main():
                         wa, wb = (d, -d) if CFG["swap"] else (-d, d)
                         ok = await wheels(A_FWD * wa, B_FWD * wb, abs(a[0]) * CFG["track"] / CFG["wheel"], a[1])
                     elif op == "G":
-                        ok = await do_grip(grip, a[0], a[1], a[2], a[3])
+                        ok = await do_grip(grip, a[0], a[1], a[2], a[3], a[4] if len(a) > 4 else 0)
                     elif op == "S":
                         if grip is not None:
                             motor.stop(grip)

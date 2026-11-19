@@ -128,7 +128,7 @@
   <div class="dims"><label>집게 포트 <select id="gripPort"><option value="auto">자동 찾기</option><option value="none">없음</option><option>C</option><option>D</option><option>E</option><option>F</option></select></label></div>
   <label class="ck"><input id="gripInvert" type="checkbox"> 집게 방향이 반대예요 ("닫기"에 열림)</label>
   <label class="sl">집게 힘 (약하면 중간에 멈춰요. 이 집게는 60% 이상 필요) <span id="vGripPwm"></span><input id="gripPwm" type="range" min="30" max="100" step="5"></label>
-  <label class="sl">닫는 최대 각도 (0 = 물체에 닿아 멈출 때까지) <span id="vGripCloseDeg"></span><input id="gripCloseDeg" type="range" min="0" max="200" step="5"></label>
+  <label class="sl">닫는 한계: 열린 끝에서 이만큼까지만 (0 = 닿아 멈출 때까지) <span id="vGripCloseDeg"></span><input id="gripCloseDeg" type="range" min="0" max="200" step="5"></label>
   <label class="sl">여는 각도 (0 = 끝까지) <span id="vGripOpenDeg"></span><input id="gripOpenDeg" type="range" min="0" max="200" step="5"></label>
   <label class="ck"><input id="gripHold" type="checkbox"> 잡은 뒤 모터로 위치 유지 (끄면 마찰로만 버팀)</label>
 </details>
@@ -182,6 +182,7 @@ try {
   }
 } catch (e) {}
 if (!mcfg.gripPort) mcfg.gripPort = 'auto';              // older saved value "" meant "not chosen yet"
+if (!(mcfg.ver >= 2)) { mcfg.gripCloseDeg = 145; mcfg.ver = 2; }   // measured: fully closed at 140-160° from open
 const saveM = () => { try { localStorage.setItem('autoMissionCfg', JSON.stringify(mcfg)); } catch (e) {} };
 
 function bindRange(obj, save, id, valId, fmt, after) {
@@ -391,7 +392,7 @@ function onLine(line) {
     return;
   }
   if (line.startsWith('READY')) { hubGrip = !line.includes('NOGRIP') && line.includes('GRIP'); hubGripPort = hubGrip ? (line.split(' ')[2] || '?') : ''; gotLine('READY', line); }
-  else if (line.startsWith('GR ')) { const p = line.split(' '); lastGrip = { deg: +p[1], why: p[2] }; }
+  else if (line.startsWith('GR ')) { const p = line.split(' '); lastGrip = { deg: +p[1], why: p[2], rel: p[3] == null || p[3] === '?' ? null : +p[3] }; }
   else if (line === 'DEADMAN') log('명령이 끊겨서 허브가 스스로 멈췄어요');
   else if (line === 'NO_WHEELS') log('A/B 포트에 모터가 없어요');
   else if (line === 'BYE') { /* program ended on purpose */ }
@@ -621,10 +622,13 @@ const closeDir = () => (mcfg.gripInvert ? -1 : 1);       // Auto's gripper: moto
 async function gripper(close) {
   if (!hubGrip) { log('집게 없음: 건너뜀'); return; }
   lastGrip = null;
-  await action(`G ${close ? closeDir() : -closeDir()} ${mcfg.gripPwm} ${close && mcfg.gripHold ? 1 : 0} ${close ? mcfg.gripCloseDeg : mcfg.gripOpenDeg}`, 6000);
+  // flag 1 = opening (reaching the end marks "fully open"), 2 = closing (limit counted from fully open)
+  await action(`G ${close ? closeDir() : -closeDir()} ${mcfg.gripPwm} ${close && mcfg.gripHold ? 1 : 0} ${close ? mcfg.gripCloseDeg : mcfg.gripOpenDeg} ${close ? 2 : 1}`, 6000);
   if (lastGrip) {
     const why = { stall: close ? '물체나 끝에 닿아 멈춤' : '끝에 닿아 멈춤', angle: '정한 각도까지', time: '3초 시간 제한', cmd: '중단됨' }[lastGrip.why] || lastGrip.why;
-    log(`    집게 ${close ? '닫기' : '열기'}: ${Math.abs(lastGrip.deg)}° 움직임 (${why}, 힘 ${mcfg.gripPwm}%)` + (Math.abs(lastGrip.deg) < 5 ? ' ⚠ 거의 안 움직였어요: 이미 끝이거나 힘이 약해요' : ''));
+    const rel = lastGrip.rel == null ? ' · 열린 끝 위치를 아직 몰라요(먼저 "집게 열기")' : ` · 지금 열린 끝에서 ${lastGrip.rel}°`;
+    log(`    집게 ${close ? '닫기' : '열기'}: ${Math.abs(lastGrip.deg)}° 움직임 (${why}, 힘 ${mcfg.gripPwm}%)${rel}` +
+      (Math.abs(lastGrip.deg) < 5 && lastGrip.why === 'stall' ? ' ⚠ 거의 안 움직였어요: 이미 끝이거나 힘이 약해요' : ''));
   }
 }
 
