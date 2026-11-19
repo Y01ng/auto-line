@@ -125,7 +125,7 @@
   <label class="sl">집는 거리: 바퀴 축 → 집게가 잡는 지점 <span id="vGrab"></span><input id="grab" type="range" min="40" max="240" step="5"></label>
   <label class="sl">내려놓는 위치: 전달 지점에서 앞쪽으로 <span id="vDropOffset"></span><input id="dropOffset" type="range" min="0" max="150" step="5"></label>
   <label class="sl">출발 위치: 바퀴 축이 출발점보다 뒤로 <span id="vStartBack"></span><input id="startBack" type="range" min="0" max="300" step="5"></label>
-  <label class="ck"><input id="sweep" type="checkbox"> 회전 뒤 선이 안 보이면 좌우 30°씩 둘러보고 찾기 (물체를 들고 있을 땐 안 함 · 실험 기능)</label>
+  <label class="ck"><input id="sweep" type="checkbox"> 선이 안 보이면 멈춰서 좌우 30°씩 둘러보고 찾기 (회전 뒤 + 주행 중 · 물체를 들고 있을 땐 안 함 · 실험 기능)</label>
   <div><button id="sbOn" type="button">바퀴를 출발점 위에 놓음 (0)</button> <button id="sbCam" type="button">화면 맨 아래를 출발점에 맞춤 (180)</button></div>
   <div class="dims"><label>집게 포트 <select id="gripPort"><option value="auto">자동 찾기</option><option value="none">없음</option><option>C</option><option>D</option><option>E</option><option>F</option></select></label></div>
   <label class="ck"><input id="gripInvert" type="checkbox"> 집게 방향이 반대예요 ("닫기"에 열림)</label>
@@ -192,6 +192,11 @@ if (!(mcfg.ver >= 3)) {            // user's measurements: camera bottom edge an
   mcfg.ver = 3;
 }
 const saveM = () => { try { localStorage.setItem('autoMissionCfg', JSON.stringify(mcfg)); } catch (e) {} };
+if (!(mcfg.ver >= 4)) {            // user asked for more speed
+  if (cfg.speed < 300) { cfg.speed = 300; saveCfg(); }
+  if (mcfg.turnSpeed < 250) mcfg.turnSpeed = 250;
+  mcfg.ver = 4; saveM();
+}
 
 function bindRange(obj, save, id, valId, fmt, after) {
   const el = $(id);
@@ -539,10 +544,11 @@ function followLeg(lenMm, opt = {}) {
   if (aborted) return Promise.reject(new Error('정지됨'));
   legId++;
   const f = { leg: legId, lenMm, limitDeg: Math.max(1, Math.round(lenMm * DEG_PER_MM)), resync: opt.resync || false,
-    speed: opt.speed || cfg.speed, finishing: false, prevRow: null, seen: 0, lost: 0, resyncAt: null, rowAt: null };
+    speed: opt.speed || cfg.speed, finishing: false, prevRow: null, seen: 0, lost: 0, resyncAt: null, rowAt: null,
+    search: !!opt.search, lostRun: 0, needSearch: false };
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { if (fol === f) { fol = null; mode = 'idle'; } reject(new Error('구간 시간 초과')); }, 6000 + lenMm * 60);
-    f.resolve = (deg) => { clearTimeout(timer); resolve({ travelMm: Math.round(deg / DEG_PER_MM), resyncAt: f.resyncAt, rowAt: f.rowAt, lost: f.lost, seen: f.seen }); };
+    f.resolve = (deg) => { clearTimeout(timer); resolve({ travelMm: Math.round(deg / DEG_PER_MM), resyncAt: f.resyncAt, rowAt: f.rowAt, lost: f.lost, seen: f.seen, needSearch: f.needSearch }); };
     f.reject = (e) => { clearTimeout(timer); reject(e); };
     errF = prevErrF = null; followCmd = [0, 0];
     odo = { leg: f.leg, deg: 0, t: performance.now() };
@@ -562,8 +568,15 @@ function followTick(det, cr, dt) {
     const out = C.control(errF, prevErrF, dt, Object.assign({}, cfg, { speed: f.speed }));
     const t = Math.max(-MAX_TURN, Math.min(MAX_TURN, out.turn));   // legs are straight: never swerve hard
     const b = f.speed * (1 - 0.5 * Math.abs(t));
-    prevErrF = errF; left = b * (1 + t); right = b * (1 - t); f.seen++;
-  } else { errF = prevErrF = null; f.lost++; }           // no line (junction / object): keep going straight
+    prevErrF = errF; left = b * (1 + t); right = b * (1 - t); f.seen++; f.lostRun = 0;
+  } else { errF = prevErrF = null; f.lost++; f.lostRun++; }   // no line (junction / object): keep going straight
+  // far from the end of the leg and no line for a while: stop here, the mission looks around for it
+  if (f.search && !f.finishing && f.lostRun >= 12 && f.lenMm - odoMm(f) > mcfg.camOffset + 100) {
+    followCmd = [0, 0];
+    f.needSearch = true; fol = null; mode = 'idle';
+    f.resolve(odo.leg === f.leg ? odo.deg : 0);
+    return;
+  }
   followCmd = C.toPorts(left, right, cfg);
   if (!f.resync || f.finishing) return;
   const row = cr && cr.present ? cr.row : null;
@@ -739,15 +752,24 @@ async function runMission() {
         if (st.op === 'leg') {
           const len = st.len + (first ? mcfg.startBack : 0);
           const lastMark = st.marks[st.marks.length - 1];       // a leg ending between crossings has no cross line to re-measure on
-          const r = await followLeg(len, { resync: !lastMark || lastMark.cross });
+          const legOpt = { resync: !lastMark || lastMark.cross, search: !!mcfg.sweep && !holding };
+          let r = await followLeg(len, legOpt);
+          for (let tries = 0; r.needSearch && tries < 2; tries++) {       // lost the line mid-way: find it, then go on
+            const gone = r.travelMm;
+            log(`    ${gone}mm 지점에서 선을 놓침 → 멈추고 찾기`);
+            const found = await alignToLine(true);
+            log('    ' + found.replace(/^ · /, ''));
+            const r2 = await followLeg(Math.max(20, len - gone), legOpt);
+            r = Object.assign({}, r2, { travelMm: r2.resyncAt != null ? r2.travelMm : gone + r2.travelMm, lost: r.lost + r2.lost, seen: r.seen + r2.seen });
+          }
           note = fmtLeg(r, len);
           if (r.seen < 3 && r.lost > 10) note += ' ⚠ 선을 거의 못 봤어요';
         } else if (st.op === 'turn') {
           await action(`T ${st.deg} ${mcfg.turnSpeed}`);
           if (next && (next.op === 'leg' || (next.op === 'move' && next.mm > 0))) note = (await alignToLine(!!mcfg.sweep && !holding && next.op === 'leg')).replace(/^ · /, '');
         } else if (st.op === 'move') {
-          if (st.mm > 0) note = fmtLeg(await followLeg(st.mm, { resync: false, speed: Math.min(cfg.speed, 150) }), st.mm);
-          else if (st.mm < 0) await action(`M ${st.mm} ${Math.min(cfg.speed, 200)}`);
+          if (st.mm > 0) note = fmtLeg(await followLeg(st.mm, { resync: false, speed: Math.min(cfg.speed, 220) }), st.mm);
+          else if (st.mm < 0) await action(`M ${st.mm} ${Math.min(cfg.speed, 280)}`);
         } else if (st.op === 'grip') { await gripper(true, st.pick); if (st.pick) holding = true; }
         else if (st.op === 'release') { await gripper(false); holding = false; }
       } catch (e) {
@@ -825,7 +847,7 @@ function processFrame(ts) {
     thr = Math.min(thr, Math.round(white * 0.5));
   }
   let det;
-  if (usable) det = M.trackLine(gray, W, H, thr, lineSt, { roiTop: cfg.roiTop });
+  if (usable) det = M.trackLine(gray, W, H, thr, lineSt, { roiTop: cfg.roiTop, gateMax: 0.5, gateGrow: 0.06 });
   else { lineSt.age = (lineSt.age || 0) + 1; det = { found: false, error: 0, thr, y0: base.y0, bands: [], reason: base.reason }; }
   const cr = usable ? M.detectCrossing(gray, W, H, { roiTop: cfg.roiTop, thr, minRows: Math.max(2, Math.round((lineSt.w || 6) * 0.4)) }) : null;
   lastFrameT = performance.now();

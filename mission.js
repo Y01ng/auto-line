@@ -101,7 +101,7 @@
     return node.bar || node.adj.some((a) => a.dir % 2 !== dir % 2);
   }
 
-  const HOT_PEN = 90;                   // cm-equivalent: turning while the gripper points at / sweeps an object
+  const HOT_PEN = 300;                  // cm-equivalent: turning while the gripper points at / sweeps an object
   /** Is there an object within gripper reach straight ahead of node n in direction dir? */
   function hotAt(G, n, dir, objNodes, reachCm) {
     let cur = n, L = 0;
@@ -119,6 +119,7 @@
     const td = turnDelta(h, dir);
     if (!td || !(reachCm > 0)) return 0;
     if (hotAt(G, n, h, objNodes, reachCm)) return HOT_PEN;                       // gripper is at an object: don't swing it
+    for (let d = 0; d < 4; d++) if (hotAt(G, n, d, objNodes, 13)) return HOT_PEN; // object right next to the robot body
     if (td === 2 && hotAt(G, n, (h + 1) % 4, objNodes, reachCm)) return HOT_PEN;  // U-turn passes the right-hand side
     return 0;
   }
@@ -216,7 +217,7 @@
     const objs = T.objects.map((x) => Object.assign({}, x, { done: false }));
     const stubs = o.stubs && o.stubs.length ? o.stubs : T.stubs;
     const grab = o.grab, jaw = o.jaw ?? 100;             // jaw: back-off needed before the open gripper may swing
-    const reachCm = (grab + 70) / 10;
+    const reachCm = (grab + 130) / 10;                   // gripper reach + jaw length + safety margin
     let freeStubs = stubs.slice();
     let pose = Object.assign({}, T.start);
     let folded = false;                                  // gripper closed empty after a drop -> open before the next pick
@@ -232,8 +233,13 @@
         const seq = a.steps.slice();
         if (a.heading !== pick.approachDir) {
           const t = { op: 'turn', deg: TURN_DEG[turnDelta(a.heading, pick.approachDir)], at: pick.from };
-          if (pick.near) t.warn = '집게가 물체를 옆에서 칠 수 있어요';
-          seq.push(t);
+          if (pick.near) {                               // object close to the turning point: turn with the jaws closed
+            if (pick.approachLen * 10 - grab < 40) t.warn = '집게를 접고 돌지만 물체에 닿을 수 있어요';
+            if (!folded) seq.push({ op: 'grip', why: '집게 접고 돌기' });
+            seq.push(t);
+            seq.push({ op: 'release', why: '집게 다시 열기' });
+            folded = false;
+          } else seq.push(t);
         }
         if (folded) {                                    // open once the gripper points away from the delivered object
           seq.splice(seq.length && seq[0].op === 'turn' ? 1 : 0, 0, { op: 'release', why: '집게 다시 열기' });
@@ -313,7 +319,7 @@
     if (st.exp == null) { st.exp = center; st.age = 99; st.cx = [null, null, null]; if (st.w === undefined) st.w = null; }
     if (st.age > 5) st.exp += (center - st.exp) * 0.15;          // lost: drift back to the middle
     if (st.age > 30) st.w = null;                                // lost for long: relearn the tape width
-    const gate = W * (st.age <= 5 ? gate0 : Math.min(gateMax, gate0 + 0.03 * (st.age - 5)));
+    const gate = W * (st.age <= 5 ? gate0 : Math.min(gateMax, gate0 + (o.gateGrow ?? 0.03) * (st.age - 5)));
     const wMin = st.w ? Math.max(2, st.w * 0.45) : Math.max(3, W * 0.03);
     const wMax = st.w ? Math.min(W * 0.35, st.w * 2.2) : W * 0.3;
     const bandH = (H - y0) / nb;
