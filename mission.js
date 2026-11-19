@@ -184,6 +184,27 @@
     return { cost: best.cost, states, from: best.from, approachDir: best.dirToT, approachLen: best.len, near: best.near };
   }
 
+  /** Cheapest way back onto the start crossing (the caller adds the final turn to the start heading). */
+  function planHome(G, pose, start, blockedIn, reachCm) {
+    const blocked = new Set(blockedIn);
+    blocked.delete(pose.node); blocked.delete(start.node);
+    const { dist, prev, key } = dijkstra(G, pose.node, pose.heading, blocked, new Set(blockedIn), reachCm);
+    let best = null;
+    for (let h = 0; h < 4; h++) {
+      const k = key(start.node, h);
+      if (!dist.has(k)) continue;
+      const c = dist.get(k) + TURN_COST[turnDelta(h, start.heading)];
+      if (!best || c < best.cost) best = { cost: c, k };
+    }
+    if (!best) return null;
+    const states = [];
+    for (let k = best.k; k; k = prev.get(k)) {
+      const [n, h] = k.split('|');
+      states.unshift({ node: n, heading: +h });
+    }
+    return { cost: best.cost, states };
+  }
+
   /** states -> [turn | leg] steps. A leg is one straight run; marks = nodes passed (distance in mm). */
   function statesToSteps(G, states, heading) {
     const steps = [];
@@ -269,7 +290,7 @@
         const dropAppr = Math.max(0, Math.round(drop.approachLen * 10 - o.dropOffset - grab));
         if (dropAppr) steps.push({ op: 'move', mm: dropAppr, why: '전달존으로' });
         steps.push({ op: 'release', why: `${obj.name} 내려놓기 (${stub})` });
-        const last = i === targets.length - 1;
+        const last = i === targets.length - 1 && !o.returnHome;
         if (last || dropAppr >= jaw) {
           if (dropAppr) steps.push({ op: 'move', mm: -dropAppr, why: '교차로로 후진' });
         } else {
@@ -282,7 +303,16 @@
         }
         pose = { node: drop.from, heading: drop.approachDir };
       });
-      if (targets.length && o.clear > 0) steps.push({ op: 'move', mm: -o.clear, why: '마지막 물러나기' });
+      if (targets.length && o.returnHome) {              // back to the start crossing, facing the start direction
+        const left = new Set(objs.filter((x) => !x.done).map((x) => x.node));
+        const home = planHome(G, pose, T.start, left, reachCm);
+        if (!home) throw new Error('출발점으로 돌아갈 길이 없어요');
+        const hs = statesToSteps(G, home.states, pose.heading);
+        const seq = hs.steps.slice();
+        if (hs.heading !== T.start.heading) seq.push({ op: 'turn', deg: TURN_DEG[turnDelta(hs.heading, T.start.heading)], at: T.start.node });
+        if (folded) seq.splice(seq.length && seq[0].op === 'turn' ? 1 : 0, 0, { op: 'release', why: '집게 다시 열기' });
+        steps.push(...seq);
+      } else if (targets.length && o.clear > 0) steps.push({ op: 'move', mm: -o.clear, why: '마지막 물러나기' });
     } catch (e) {
       return { steps, error: e.message };
     }

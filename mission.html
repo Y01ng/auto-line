@@ -125,6 +125,7 @@
   <label class="sl">집는 거리: 바퀴 축 → 집게가 잡는 지점 <span id="vGrab"></span><input id="grab" type="range" min="40" max="240" step="5"></label>
   <label class="sl">내려놓는 위치: 전달 지점에서 앞쪽으로 <span id="vDropOffset"></span><input id="dropOffset" type="range" min="0" max="150" step="5"></label>
   <label class="sl">출발 위치: 바퀴 축이 출발점보다 뒤로 <span id="vStartBack"></span><input id="startBack" type="range" min="0" max="300" step="5"></label>
+  <label class="ck"><input id="loop" type="checkbox"> 끝나면 출발점으로 돌아가 처음부터 계속 반복 (정지 버튼으로 멈춤)</label>
   <label class="ck"><input id="sweep" type="checkbox"> 선이 안 보이면 멈춰서 좌우 30°씩 둘러보고 찾기 (회전 뒤 + 주행 중 · 물체를 들고 있을 땐 안 함 · 실험 기능)</label>
   <div><button id="sbOn" type="button">바퀴를 출발점 위에 놓음 (0)</button> <button id="sbCam" type="button">화면 맨 아래를 출발점에 맞춤 (180)</button></div>
   <div class="dims"><label>집게 포트 <select id="gripPort"><option value="auto">자동 찾기</option><option value="none">없음</option><option>C</option><option>D</option><option>E</option><option>F</option></select></label></div>
@@ -231,6 +232,8 @@ for (const [id, v] of [['sbOn', 0], ['sbCam', 180]]) {
 bindRange(mcfg, saveM, 'gripOpenDeg', 'vGripOpenDeg', (v) => (v ? v + '°' : '끝까지'));
 bindRange(mcfg, saveM, 'gripCloseDeg', 'vGripCloseDeg', (v) => (v ? v + '°' : '닿을 때까지'));
 bindRange(mcfg, saveM, 'gripPwm', 'vGripPwm', (v) => v + '%');
+$('loop').checked = !!mcfg.loop;
+$('loop').addEventListener('change', () => { mcfg.loop = $('loop').checked; saveM(); renderPlan(); });
 $('sweep').checked = !!mcfg.sweep;
 $('sweep').addEventListener('change', () => { mcfg.sweep = $('sweep').checked; saveM(); });
 $('gripHold').checked = !!mcfg.gripHold;
@@ -295,7 +298,7 @@ function buildTrack() {
 function currentPlan() {
   const T = buildTrack();
   const targets = (mcfg.targets[mcfg.map] || []).filter((id) => T.objects.some((o) => o.id === id));
-  const plan = M.compileMission(T, targets, { grab: mcfg.grab, dropOffset: mcfg.dropOffset, clear: mcfg.clear });
+  const plan = M.compileMission(T, targets, { grab: mcfg.grab, dropOffset: mcfg.dropOffset, clear: mcfg.clear, returnHome: !!mcfg.loop });
   return { T, targets, plan };
 }
 function renderPlan(curIdx) {
@@ -749,6 +752,7 @@ async function runMission() {
     let first = true;
     let failed = 0;
     let holding = false;                                    // carrying an object: no searching turns
+    for (let round = 1; ; round++) {
     for (let i = 0; i < plan.steps.length; i++) {
       const st = plan.steps[i], ts = performance.now(), next = plan.steps[i + 1];
       renderPlan(i);
@@ -791,6 +795,13 @@ async function runMission() {
       }
       first = false;
       log(`  ${i + 1}/${plan.steps.length} ${M.describe(st)}${note ? ' → ' + note : ''} [${((performance.now() - ts) / 1000).toFixed(1)}s]`);
+    }
+      if (!mcfg.loop) break;
+      log(`↻ ${round}회 끝 (${((performance.now() - t0) / 1000).toFixed(1)}초) → 3초 뒤 처음부터 다시. 물체를 제자리에 놓아 주세요`);
+      renderPlan();
+      await C.sleep(3000);
+      if (aborted) throw new Error('정지됨');
+      holding = false;
     }
     log(`${failed ? '△' : '✔'} 미션 끝${failed ? ` (실패한 단계 ${failed}개)` : ''} · ${((performance.now() - t0) / 1000).toFixed(1)}초`);
   } catch (e) { log(`✖ 미션 중단: ${e.message} (${((performance.now() - t0) / 1000).toFixed(1)}초)`); if (!aborted) abortAll(e.message); }
