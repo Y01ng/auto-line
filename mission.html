@@ -125,6 +125,7 @@
   <label class="sl">집는 거리: 바퀴 축 → 집게가 잡는 지점 <span id="vGrab"></span><input id="grab" type="range" min="40" max="240" step="5"></label>
   <label class="sl">내려놓는 위치: 전달 지점에서 앞쪽으로 <span id="vDropOffset"></span><input id="dropOffset" type="range" min="0" max="150" step="5"></label>
   <label class="sl">출발 위치: 바퀴 축이 출발점보다 뒤로 <span id="vStartBack"></span><input id="startBack" type="range" min="0" max="300" step="5"></label>
+  <div><button id="sbOn" type="button">바퀴를 출발점 위에 놓음 (0)</button> <button id="sbCam" type="button">화면 맨 아래를 출발점에 맞춤 (180)</button></div>
   <div class="dims"><label>집게 포트 <select id="gripPort"><option value="auto">자동 찾기</option><option value="none">없음</option><option>C</option><option>D</option><option>E</option><option>F</option></select></label></div>
   <label class="ck"><input id="gripInvert" type="checkbox"> 집게 방향이 반대예요 ("닫기"에 열림)</label>
   <label class="sl">집게 힘 (약하면 중간에 멈춰요. 이 집게는 60% 이상 필요) <span id="vGripPwm"></span><input id="gripPwm" type="range" min="30" max="100" step="5"></label>
@@ -171,8 +172,8 @@ const MDEFAULTS = {
   start: { practice: { node: '0,0', heading: 0 }, comp: { node: '69,0', heading: 2 } },
   stub: { practice: null },
   targets: { practice: [], comp: [] },
-  camOffset: 185, baseRow: 0.85, track: 128, turnSpeed: 180, grab: 120, dropOffset: 30, clear: 80, startBack: 0,
-  gripPort: 'auto', gripInvert: false, gripOpenDeg: 0, gripCloseDeg: 0, gripPwm: 60, gripHold: true,
+  camOffset: 200, baseRow: 0.85, track: 128, turnSpeed: 180, grab: 180, dropOffset: 30, clear: 80, startBack: 0,
+  gripPort: 'auto', gripInvert: false, gripOpenDeg: 0, gripCloseDeg: 150, gripPwm: 60, gripHold: true,
 };
 let mcfg = JSON.parse(JSON.stringify(MDEFAULTS));
 try {
@@ -183,7 +184,12 @@ try {
   }
 } catch (e) {}
 if (!mcfg.gripPort) mcfg.gripPort = 'auto';              // older saved value "" meant "not chosen yet"
-if (!(mcfg.ver >= 2)) { mcfg.gripCloseDeg = 145; mcfg.ver = 2; }   // measured: fully closed at 140-160° from open
+if (!(mcfg.ver >= 3)) {            // user's measurements: camera bottom edge and grip point are both ~18 cm ahead of the axle
+  mcfg.grab = 180;
+  mcfg.gripCloseDeg = 150;         // fully closed at 140-160° from open; 145 was a touch loose
+  if (mcfg.camOffset === 185) mcfg.camOffset = 200;   // the yellow line (85%) is a bit beyond the bottom edge (180 mm)
+  mcfg.ver = 3;
+}
 const saveM = () => { try { localStorage.setItem('autoMissionCfg', JSON.stringify(mcfg)); } catch (e) {} };
 
 function bindRange(obj, save, id, valId, fmt, after) {
@@ -208,6 +214,9 @@ bindRange(mcfg, saveM, 'turnSpeed', 'vTurnSpeed', (v) => v + ' °/s');
 bindRange(mcfg, saveM, 'grab', 'vGrab', (v) => v + ' mm', replan);
 bindRange(mcfg, saveM, 'dropOffset', 'vDropOffset', (v) => v + ' mm', replan);
 bindRange(mcfg, saveM, 'startBack', 'vStartBack', (v) => v + ' mm');
+for (const [id, v] of [['sbOn', 0], ['sbCam', 180]]) {
+  $(id).addEventListener('click', () => { mcfg.startBack = v; $('startBack').value = v; $('vStartBack').textContent = v + ' mm'; saveM(); log(`출발 위치: 바퀴 축이 출발점보다 ${v}mm 뒤`); });
+}
 bindRange(mcfg, saveM, 'gripOpenDeg', 'vGripOpenDeg', (v) => (v ? v + '°' : '끝까지'));
 bindRange(mcfg, saveM, 'gripCloseDeg', 'vGripCloseDeg', (v) => (v ? v + '°' : '닿을 때까지'));
 bindRange(mcfg, saveM, 'gripPwm', 'vGripPwm', (v) => v + '%');
@@ -626,7 +635,7 @@ async function alignToLine() {
 }
 
 const closeDir = () => (mcfg.gripInvert ? -1 : 1);       // Auto's gripper: motor + closes, - opens
-async function gripper(close) {
+async function gripper(close, pick) {
   if (!hubGrip) { log('집게 없음: 건너뜀'); return; }
   lastGrip = null;
   // flag 1 = opening (reaching the end marks "fully open"), 2 = closing (limit counted from fully open)
@@ -636,6 +645,11 @@ async function gripper(close) {
     const rel = lastGrip.rel == null ? ' · 열린 끝 위치를 아직 몰라요(먼저 "집게 열기")' : ` · 지금 열린 끝에서 ${lastGrip.rel}°`;
     log(`    집게 ${close ? '닫기' : '열기'}: ${Math.abs(lastGrip.deg)}° 움직임 (${why}, 힘 ${mcfg.gripPwm}%)${rel}` +
       (Math.abs(lastGrip.deg) < 5 && lastGrip.why === 'stall' ? ' ⚠ 거의 안 움직였어요: 이미 끝이거나 힘이 약해요' : ''));
+    // did it catch something? jaws stopped clearly before the closing limit = something is between them
+    if (close && pick && lastGrip.rel != null && mcfg.gripCloseDeg > 0) {
+      if (lastGrip.why === 'stall' && lastGrip.rel < mcfg.gripCloseDeg - 8) log(`    ✔ 잡힘: 닫히다가 ${lastGrip.rel}°에서 물체에 걸려 멈춤`);
+      else if (lastGrip.why === 'angle') log(`    ? 끝(${lastGrip.rel}°)까지 닫힘: 물체가 가늘거나 못 잡았을 수 있어요`);
+    }
   }
 }
 
@@ -709,7 +723,7 @@ async function runMission() {
         } else if (st.op === 'move') {
           if (st.mm > 0) note = fmtLeg(await followLeg(st.mm, { resync: false, speed: Math.min(cfg.speed, 150) }), st.mm);
           else if (st.mm < 0) await action(`M ${st.mm} ${Math.min(cfg.speed, 200)}`);
-        } else if (st.op === 'grip') await gripper(true);
+        } else if (st.op === 'grip') await gripper(true, st.pick);
         else if (st.op === 'release') await gripper(false);
       } catch (e) {
         if (aborted) throw e;                              // deliberate stop

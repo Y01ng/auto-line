@@ -71,7 +71,20 @@
     return node.bar || node.adj.some((a) => a.dir % 2 !== dir % 2);
   }
 
-  function dijkstra(G, start, startHeading, blocked) {
+  const HOT_PEN = 90;                   // cm-equivalent: turning while the gripper points at / sweeps an object
+  /** Is there an object within gripper reach straight ahead of node n in direction dir? */
+  function hotAt(G, n, dir, objNodes, reachCm) {
+    return reachCm > 0 && G.get(n).adj.some((a) => a.dir === dir && objNodes.has(a.to) && a.len <= reachCm);
+  }
+  function turnPen(G, n, h, dir, objNodes, reachCm) {
+    const td = turnDelta(h, dir);
+    if (!td || !(reachCm > 0)) return 0;
+    if (hotAt(G, n, h, objNodes, reachCm)) return HOT_PEN;                       // gripper is at an object: don't swing it
+    if (td === 2 && hotAt(G, n, (h + 1) % 4, objNodes, reachCm)) return HOT_PEN;  // U-turn passes the right-hand side
+    return 0;
+  }
+
+  function dijkstra(G, start, startHeading, blocked, objNodes, reachCm) {
     const key = (n, h) => n + '|' + h;
     const dist = new Map([[key(start, startHeading), 0]]);
     const prev = new Map();
@@ -82,7 +95,7 @@
       if (d > dist.get(key(n, h))) continue;
       for (const a of G.get(n).adj) {
         if (blocked.has(a.to)) continue;
-        const nd = d + a.len + TURN_COST[turnDelta(h, a.dir)];
+        const nd = d + a.len + TURN_COST[turnDelta(h, a.dir)] + (objNodes ? turnPen(G, n, h, a.dir, objNodes, reachCm) : 0);
         const k = key(a.to, a.dir);
         if (nd < (dist.has(k) ? dist.get(k) : Infinity)) { dist.set(k, nd); prev.set(k, key(n, h)); pq.push([nd, a.to, a.dir]); }
       }
@@ -91,11 +104,16 @@
   }
 
   /** Cheapest way to stand on a neighbour of `target`, facing it, at least `minApproachCm` away. */
-  function planTo(G, pose, target, blockedIn, minApproachCm) {
+  function planTo(G, pose, target, blockedIn, minApproachCm, o = {}) {
     const blocked = new Set(blockedIn);
     blocked.add(target);
     blocked.delete(pose.node);
-    const { dist, prev, key } = dijkstra(G, pose.node, pose.heading, blocked);
+    // o.reachCm: how far ahead the gripper reaches. o.pick: target is an object (don't swing into it).
+    const reach = o.reachCm || 0;
+    const objNodes = new Set(blockedIn);
+    if (o.pick) objNodes.add(target);
+    objNodes.delete(pose.node);
+    const { dist, prev, key } = dijkstra(G, pose.node, pose.heading, blocked, objNodes, reach);
     let best = null;
     for (const a of G.get(target).adj) {
       const from = a.to, dirToT = (a.dir + 2) % 4;
@@ -103,8 +121,10 @@
       for (let h = 0; h < 4; h++) {
         const k = key(from, h);
         if (!dist.has(k)) continue;
-        const c = dist.get(k) + TURN_COST[turnDelta(h, dirToT)] + a.len;
-        if (!best || c < best.cost) best = { cost: c, from, heading: h, dirToT, len: a.len };
+        // turning toward an object that is already within reach would hit it sideways: come in straight
+        const near = !!o.pick && h !== dirToT && a.len <= reach;
+        const c = dist.get(k) + TURN_COST[turnDelta(h, dirToT)] + a.len + (near ? HOT_PEN : 0) + turnPen(G, from, h, dirToT, objNodes, reach);
+        if (!best || c < best.cost) best = { cost: c, from, heading: h, dirToT, len: a.len, near };
       }
     }
     if (!best) return null;
@@ -113,7 +133,7 @@
       const [n, h] = k.split('|');
       states.unshift({ node: n, heading: +h });
     }
-    return { cost: best.cost, states, from: best.from, approachDir: best.dirToT, approachLen: best.len };
+    return { cost: best.cost, states, from: best.from, approachDir: best.dirToT, approachLen: best.len, near: best.near };
   }
 
   /** states -> [turn | leg] steps. A leg is one straight run; marks = nodes passed (distance in mm). */
@@ -148,36 +168,65 @@
     const G = buildGraph(T);
     const objs = T.objects.map((x) => Object.assign({}, x, { done: false }));
     const stubs = o.stubs && o.stubs.length ? o.stubs : T.stubs;
+    const grab = o.grab, jaw = o.jaw ?? 100;             // jaw: back-off needed before the open gripper may swing
+    const reachCm = (grab + 70) / 10;
+    let freeStubs = stubs.slice();
     let pose = Object.assign({}, T.start);
+    let folded = false;                                  // gripper closed empty after a drop -> open before the next pick
     const steps = [];
     try {
       targets.forEach((tid, i) => {
         const obj = objs.find((x) => x.id === tid);
         if (!obj) throw new Error('없는 물체 번호: ' + tid);
         const blocked = new Set(objs.filter((x) => !x.done && x.node !== obj.node).map((x) => x.node));
-        const pick = planTo(G, pose, obj.node, blocked, (o.grab + 20) / 10);
+        const pick = planTo(G, pose, obj.node, blocked, Math.max(0, grab - 40) / 10, { reachCm, pick: true });
         if (!pick) throw new Error(`${obj.name}까지 갈 길이 없어요`);
         const a = statesToSteps(G, pick.states, pose.heading);
-        steps.push(...a.steps);
-        if (a.heading !== pick.approachDir) steps.push({ op: 'turn', deg: TURN_DEG[turnDelta(a.heading, pick.approachDir)], at: pick.from });
-        const appr = Math.round(pick.approachLen * 10 - o.grab);
-        steps.push({ op: 'move', mm: appr, why: `${obj.name} 앞까지` });
-        steps.push({ op: 'grip', why: `${obj.name} 집기` });
-        steps.push({ op: 'move', mm: -appr, why: '교차로로 후진' });
+        const seq = a.steps.slice();
+        if (a.heading !== pick.approachDir) {
+          const t = { op: 'turn', deg: TURN_DEG[turnDelta(a.heading, pick.approachDir)], at: pick.from };
+          if (pick.near) t.warn = '집게가 물체를 옆에서 칠 수 있어요';
+          seq.push(t);
+        }
+        if (folded) {                                    // open once the gripper points away from the delivered object
+          seq.splice(seq.length && seq[0].op === 'turn' ? 1 : 0, 0, { op: 'release', why: '집게 다시 열기' });
+          folded = false;
+        }
+        steps.push(...seq);
+        const appr = Math.max(0, Math.round(pick.approachLen * 10 - grab));
+        if (appr) steps.push({ op: 'move', mm: appr, why: `${obj.name} 앞까지` });
+        steps.push({ op: 'grip', why: `${obj.name} 집기`, pick: true });
+        if (appr) steps.push({ op: 'move', mm: -appr, why: '교차로로 후진' });
         obj.done = true;
         pose = { node: pick.from, heading: pick.approachDir };
 
-        const stub = stubs[i % stubs.length];
+        // nearest 전달존 end that is still empty
         const blocked2 = new Set(objs.filter((x) => !x.done).map((x) => x.node));
-        const drop = planTo(G, pose, stub, blocked2, 0);
-        if (!drop) throw new Error(`전달존(${stub})까지 갈 길이 없어요`);
+        if (!freeStubs.length) freeStubs = stubs.slice();
+        let drop = null, stub = null;
+        for (const s of freeStubs) {
+          const d = planTo(G, pose, s, blocked2, 0, { reachCm });
+          if (d && (!drop || d.cost < drop.cost)) { drop = d; stub = s; }
+        }
+        if (!drop) throw new Error('전달존까지 갈 길이 없어요');
+        freeStubs.splice(freeStubs.indexOf(stub), 1);
         const b = statesToSteps(G, drop.states, pose.heading);
         steps.push(...b.steps);
         if (b.heading !== drop.approachDir) steps.push({ op: 'turn', deg: TURN_DEG[turnDelta(b.heading, drop.approachDir)], at: drop.from });
-        const dropAppr = Math.max(0, Math.round(drop.approachLen * 10 - o.dropOffset - o.grab));
-        steps.push({ op: 'move', mm: dropAppr, why: '전달존으로' });
-        steps.push({ op: 'release', why: `${obj.name} 내려놓기` });
-        steps.push({ op: 'move', mm: -dropAppr, why: '교차로로 후진' });
+        const dropAppr = Math.max(0, Math.round(drop.approachLen * 10 - o.dropOffset - grab));
+        if (dropAppr) steps.push({ op: 'move', mm: dropAppr, why: '전달존으로' });
+        steps.push({ op: 'release', why: `${obj.name} 내려놓기 (${stub})` });
+        const last = i === targets.length - 1;
+        if (last || dropAppr >= jaw) {
+          if (dropAppr) steps.push({ op: 'move', mm: -dropAppr, why: '교차로로 후진' });
+        } else {
+          // the object sits between the open jaws: turning now would drag it away.
+          // Back off, close the empty gripper, return to the crossing, then turn.
+          steps.push({ op: 'move', mm: -jaw, why: '물체에서 물러나기' });
+          steps.push({ op: 'grip', why: '빈 집게 접기' });
+          if (jaw - dropAppr) steps.push({ op: 'move', mm: jaw - dropAppr, why: '교차로로' });
+          folded = true;
+        }
         pose = { node: drop.from, heading: drop.approachDir };
       });
       if (targets.length && o.clear > 0) steps.push({ op: 'move', mm: -o.clear, why: '마지막 물러나기' });
@@ -191,7 +240,7 @@
     const dirs = ['→', '↓', '←', '↑'];
     switch (step.op) {
       case 'leg': return `선 따라 ${dirs[step.dir]} ${(step.len / 10).toFixed(0)}cm (${step.from} → ${step.to}, 교차로 ${step.marks.filter((m) => m.cross).length}개)`;
-      case 'turn': return `${step.deg > 0 ? '오른쪽' : '왼쪽'} ${Math.abs(step.deg)}° 회전 (${step.at})`;
+      case 'turn': return `${step.deg > 0 ? '오른쪽' : '왼쪽'} ${Math.abs(step.deg)}° 회전 (${step.at})` + (step.warn ? ' ⚠ ' + step.warn : '');
       case 'move': return `${step.mm >= 0 ? '직진' : '후진'} ${Math.abs(step.mm)}mm${step.why ? ' · ' + step.why : ''}`;
       case 'grip': return '집게 닫기' + (step.why ? ' · ' + step.why : '');
       case 'release': return '집게 열기' + (step.why ? ' · ' + step.why : '');
