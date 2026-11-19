@@ -46,6 +46,36 @@
 
   const turnDelta = (h1, h2) => (((h2 - h1) % 4) + 4) % 4;
 
+  /** Copy of T with extra points "x,y" (cm) inserted on the lines they lie on (object in the middle of a line). */
+  function splitTrack(T, ids) {
+    const rows = T.rows.map(([y, xs]) => [y, xs.slice()]), cols = T.cols.map(([x, ys]) => [x, ys.slice()]);
+    const ins = (arr, v) => {
+      for (let i = 0; i + 1 < arr.length; i++) {
+        if (arr[i] === v || arr[i + 1] === v) return true;
+        if (arr[i] < v && v < arr[i + 1]) { arr.splice(i + 1, 0, v); return true; }
+      }
+      return false;
+    };
+    for (const id of ids || []) {
+      const [x, y] = String(id).split(',').map(Number);
+      if (!isFinite(x) || !isFinite(y)) continue;
+      let done = false;
+      for (const r of rows) if (r[0] === y && ins(r[1], x)) { done = true; break; }
+      if (!done) for (const c of cols) if (c[0] === x && ins(c[1], y)) break;
+    }
+    return Object.assign({}, T, { rows, cols });
+  }
+  /** Middle of every line piece between two crossings: [{id, x, y}]. */
+  function midpoints(T) {
+    const G = buildGraph(T), out = [];
+    for (const n of G.values()) for (const a of n.adj) {
+      if (a.dir !== E && a.dir !== S) continue;
+      const m = G.get(a.to), x = (n.x + m.x) / 2, y = (n.y + m.y) / 2;
+      out.push({ id: `${x},${y}`, x, y });
+    }
+    return out;
+  }
+
   function buildGraph(T = TRACK) {
     const nodes = new Map();
     const add = (x, y) => {
@@ -74,7 +104,16 @@
   const HOT_PEN = 90;                   // cm-equivalent: turning while the gripper points at / sweeps an object
   /** Is there an object within gripper reach straight ahead of node n in direction dir? */
   function hotAt(G, n, dir, objNodes, reachCm) {
-    return reachCm > 0 && G.get(n).adj.some((a) => a.dir === dir && objNodes.has(a.to) && a.len <= reachCm);
+    let cur = n, L = 0;
+    while (reachCm > 0) {
+      const e = G.get(cur).adj.find((a) => a.dir === dir);
+      if (!e) return false;
+      L += e.len;
+      if (L > reachCm) return false;
+      if (objNodes.has(e.to)) return true;
+      cur = e.to;
+    }
+    return false;
   }
   function turnPen(G, n, h, dir, objNodes, reachCm) {
     const td = turnDelta(h, dir);
@@ -115,9 +154,17 @@
     objNodes.delete(pose.node);
     const { dist, prev, key } = dijkstra(G, pose.node, pose.heading, blocked, objNodes, reach);
     let best = null;
-    for (const a of G.get(target).adj) {
-      const from = a.to, dirToT = (a.dir + 2) % 4;
-      if (blocked.has(from) || a.len < minApproachCm) continue;
+    for (let back = 0; back < 4; back++) {
+      let from = target, len = 0, found = false;
+      for (;;) {                                   // walk back along the line until far enough from the target
+        const e = G.get(from).adj.find((x) => x.dir === back);
+        if (!e) break;
+        len += e.len; from = e.to;
+        if (blocked.has(from)) break;
+        if (len >= minApproachCm) { found = true; break; }
+      }
+      if (!found) continue;
+      const a = { len }, dirToT = (back + 2) % 4;
       for (let h = 0; h < 4; h++) {
         const k = key(from, h);
         if (!dist.has(k)) continue;
@@ -351,5 +398,5 @@
     return g;
   }
 
-  return { TRACK, practiceTrack, E, S, W, N, TURN_DEG, turnDelta, buildGraph, hasCross, planTo, statesToSteps, compileMission, describe, resetTrack, trackLine, detectCrossing, tapeGray };
+  return { TRACK, practiceTrack, splitTrack, midpoints, E, S, W, N, TURN_DEG, turnDelta, buildGraph, hasCross, planTo, statesToSteps, compileMission, describe, resetTrack, trackLine, detectCrossing, tapeGray };
 });

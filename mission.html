@@ -265,7 +265,9 @@ $('btnClear').addEventListener('click', () => { logLines.length = 0; $('log').te
 let editSel = 'start';
 function baseTrack() { return mcfg.map === 'comp' ? M.TRACK : M.practiceTrack(mcfg.pw, mcfg.ph1, mcfg.ph2); }
 function buildTrack() {
-  const B = baseTrack(), G = M.buildGraph(B);
+  const want = [];
+  for (let id = 1; id <= 5; id++) { const node = mcfg.objs[mcfg.map][id]; if (node) want.push(node); }
+  const B = M.splitTrack(baseTrack(), want), G = M.buildGraph(B);   // an object in the middle of a line gets its own point
   const objs = [];
   for (let id = 1; id <= 5; id++) {
     const node = mcfg.objs[mcfg.map][id];
@@ -314,6 +316,9 @@ function renderMap() {
     s += `<circle cx="${cx}" cy="${cy}" r="3.8" fill="${OBJ_COLORS[o.id]}"/><text x="${cx}" y="${cy + 2}" font-size="5.5" text-anchor="middle" fill="#fff" font-weight="700">${o.id}</text>`;
   }
   for (const n of G.values()) s += `<circle cx="${n.x}" cy="${n.y}" r="7" fill="transparent" data-node="${n.id}"/>`;
+  if (editSel[0] === 'o') {                 // placing an object: the middle of each line piece can be tapped too
+    for (const m of M.midpoints(baseTrack())) if (!G.has(m.id)) s += `<circle cx="${m.x}" cy="${m.y}" r="1.4" fill="#e08a2c"/><circle cx="${m.x}" cy="${m.y}" r="4.5" fill="transparent" data-node="${m.id}"/>`;
+  }
   $('map').innerHTML = s;
 
   $('dims').style.display = mcfg.map === 'practice' ? '' : 'none';
@@ -340,6 +345,7 @@ document.addEventListener('click', (e) => {
     saveM(); renderMap();
   } else if (t.dataset.node) {
     const node = t.dataset.node, G = M.buildGraph(baseTrack());
+    if (!G.has(node) && (editSel === 'start' || editSel === 'stub')) return;   // middle-of-line points are for objects only
     if (editSel === 'start') {
       const dirs = G.get(node).adj.map((a) => a.dir), cur = mcfg.start[mcfg.map];
       const i = cur && cur.node === node ? dirs.indexOf(cur.heading) : -1;
@@ -714,7 +720,8 @@ async function runMission() {
       try {
         if (st.op === 'leg') {
           const len = st.len + (first ? mcfg.startBack : 0);
-          const r = await followLeg(len, { resync: true });
+          const lastMark = st.marks[st.marks.length - 1];       // a leg ending between crossings has no cross line to re-measure on
+          const r = await followLeg(len, { resync: !lastMark || lastMark.cross });
           note = fmtLeg(r, len);
           if (r.seen < 3 && r.lost > 10) note += ' ⚠ 선을 거의 못 봤어요';
         } else if (st.op === 'turn') {
