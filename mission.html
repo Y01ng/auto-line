@@ -796,10 +796,20 @@ function processFrame(ts) {
   // tape-wide dark runs near where the line was last seen, so other dark things are ignored.
   const base = C.detectLine(gray, W, H, { roiTop: cfg.roiTop, threshold: cfg.thrAuto ? null : cfg.thr, maxRunFrac: 0.3 });
   const usable = base.reason !== 'low-contrast' && base.reason !== 'too-dark';
+  // Shadows are grey, tape is black: in auto mode "dark" also has to be below half of the floor's brightness.
+  let thr = base.thr;
+  if (cfg.thrAuto && usable) {
+    const hist = new Uint32Array(256);
+    let n = 0;
+    for (let i = Math.floor(H * cfg.roiTop) * W; i < W * H; i += 3) { hist[gray[i]]++; n++; }
+    let acc = 0, white = 255;
+    for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= n * 0.3) { white = v; break; } }
+    thr = Math.min(thr, Math.round(white * 0.5));
+  }
   let det;
-  if (usable) det = M.trackLine(gray, W, H, base.thr, lineSt, { roiTop: cfg.roiTop });
-  else { lineSt.age = (lineSt.age || 0) + 1; det = { found: false, error: 0, thr: base.thr, y0: base.y0, bands: [], reason: base.reason }; }
-  const cr = usable ? M.detectCrossing(gray, W, H, { roiTop: cfg.roiTop, thr: base.thr, minRows: Math.max(2, Math.round((lineSt.w || 6) * 0.4)) }) : null;
+  if (usable) det = M.trackLine(gray, W, H, thr, lineSt, { roiTop: cfg.roiTop });
+  else { lineSt.age = (lineSt.age || 0) + 1; det = { found: false, error: 0, thr, y0: base.y0, bands: [], reason: base.reason }; }
+  const cr = usable ? M.detectCrossing(gray, W, H, { roiTop: cfg.roiTop, thr, minRows: Math.max(2, Math.round((lineSt.w || 6) * 0.4)) }) : null;
   lastFrameT = performance.now();
   lastVision = { det, cr, t: lastFrameT };
   if (mode === 'follow' && fol) followTick(det, cr, dt);
