@@ -199,6 +199,71 @@
     }
   }
 
+  // ---- camera: follow ONE line, ignore other dark things ----
+  /** Forget where the line was (new leg / after a turn): look around the image centre again. */
+  function resetTrack(st) { st.exp = null; return st; }
+
+  /**
+   * Gated line tracker. gray = tape-ready grayscale, thr = dark threshold, st = state object kept
+   * between frames. A dark run only counts as "the line" when it is (1) about as wide as the tape
+   * and (2) close to where the line was in the previous frame (or to the image centre after
+   * resetTrack). Of several candidates the one nearest to the expected position wins - not the
+   * longest. Same result shape as SpikeCore.detectLine (+ gate / exp for drawing).
+   */
+  function trackLine(gray, W, H, thr, st, o = {}) {
+    const roiTop = o.roiTop ?? 0.4, nb = 3, gate0 = o.gate ?? 0.16, gateMax = o.gateMax ?? 0.34;
+    const y0 = Math.min(H - nb, Math.max(0, Math.floor(H * roiTop)));
+    const center = (W - 1) / 2;
+    if (st.exp == null) { st.exp = center; st.age = 99; st.cx = [null, null, null]; if (st.w === undefined) st.w = null; }
+    if (st.age > 5) st.exp += (center - st.exp) * 0.15;          // lost: drift back to the middle
+    if (st.age > 30) st.w = null;                                // lost for long: relearn the tape width
+    const gate = W * (st.age <= 5 ? gate0 : Math.min(gateMax, gate0 + 0.03 * (st.age - 5)));
+    const wMin = st.w ? Math.max(2, st.w * 0.45) : Math.max(3, W * 0.03);
+    const wMax = st.w ? Math.min(W * 0.35, st.w * 2.2) : W * 0.3;
+    const bandH = (H - y0) / nb;
+    const res = { found: false, error: 0, thr, y0, bands: [], reason: '', gate, exp: st.exp };
+    const widths = [];
+    for (let b = 0; b < nb; b++) {
+      const ya = Math.round(y0 + b * bandH), yb = Math.round(y0 + (b + 1) * bandH);
+      const expB = st.age <= 5 && st.cx[b] != null ? st.cx[b] : st.exp;
+      const centers = [];
+      for (let y = ya; y < yb; y++) {
+        const row = y * W;
+        let run = 0, bestC = null, bestD = 1e9, bestW = 0;
+        for (let x = 0; x <= W; x++) {
+          if (x < W && gray[row + x] < thr) { run++; continue; }
+          if (run >= wMin && run <= wMax) {
+            const c = x - (run + 1) / 2, d = Math.abs(c - expB);
+            if (d < bestD) { bestD = d; bestC = c; bestW = run; }
+          }
+          run = 0;
+        }
+        if (bestC != null && bestD <= gate) { centers.push(bestC); widths.push(bestW); }
+      }
+      let cx = null;
+      if (centers.length >= Math.max(2, (yb - ya) * 0.4)) { centers.sort((p, q) => p - q); cx = centers[centers.length >> 1]; }
+      res.bands.push({ ya, yb, cx });
+    }
+    const weights = [0.2, 0.3, 0.5];                             // the band nearest to the robot counts most
+    let ws = 0, es = 0, nearest = null;
+    res.bands.forEach((bd, i) => {
+      if (bd.cx == null) return;
+      ws += weights[i]; es += weights[i] * ((bd.cx - center) / (W / 2)); nearest = bd.cx;
+    });
+    if (ws > 0) {
+      res.found = true;
+      res.error = Math.max(-1, Math.min(1, es / ws));
+      res.bands.forEach((bd, i) => { st.cx[i] = bd.cx; });
+      st.exp = nearest; st.age = 0;
+      if (widths.length >= 4) {
+        widths.sort((p, q) => p - q);
+        const m = widths[widths.length >> 1];
+        st.w = st.w ? st.w * 0.8 + m * 0.2 : m;
+      }
+    } else { st.age++; res.reason = 'no-line'; }
+    return res;
+  }
+
   // ---- camera: a tape line crossing the path (perpendicular bar / branch) ----
   /** gray = tape-ready grayscale (colourful pixels already pushed to white). thr = dark threshold.
    *  Returns {present, row (0..1 of image height), rows}. */
@@ -216,7 +281,8 @@
       if (best < minRun) continue;
       if (cur && y - cur.y1 <= 2) cur.y1 = y; else { cur = { y0: y, y1: y }; raw.push(cur); }
     }
-    const bands = raw.filter((b) => b.y1 - b.y0 >= 1 && b.y1 - b.y0 + 1 <= maxRows)
+    const minRows = o.minRows ?? 2;                 // thinner than the tape (tile gaps, cables) = not a cross line
+    const bands = raw.filter((b) => b.y1 - b.y0 + 1 >= minRows && b.y1 - b.y0 + 1 <= maxRows)
       .map((b) => ({ row: ((b.y0 + b.y1) / 2 + 0.5) / H, rows: b.y1 - b.y0 + 1 }));
     if (!bands.length) return { present: false, row: null, rows: 0, bands };
     const nearest = bands[bands.length - 1];        // lowest in the image = closest to the robot
@@ -236,5 +302,5 @@
     return g;
   }
 
-  return { TRACK, practiceTrack, E, S, W, N, TURN_DEG, turnDelta, buildGraph, hasCross, planTo, statesToSteps, compileMission, describe, detectCrossing, tapeGray };
+  return { TRACK, practiceTrack, E, S, W, N, TURN_DEG, turnDelta, buildGraph, hasCross, planTo, statesToSteps, compileMission, describe, resetTrack, trackLine, detectCrossing, tapeGray };
 });

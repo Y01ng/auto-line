@@ -152,6 +152,7 @@ const $ = (id) => document.getElementById(id);
 const PROG_SLOT = 19, CMD_SLOT = 18;
 const WHEEL_MM = 56, DEG_PER_MM = 360 / (Math.PI * WHEEL_MM);
 const RESYNC_TOL = 50;          // mm: crossing must appear within this of where odometry expects it
+const MAX_TURN = 0.5;           // steering limit while following a mission leg (1 = spin on one wheel)
 const GRIP_SPEED = 250;
 const enc = (s) => new TextEncoder().encode(s);
 const OBJ_COLORS = { 1: '#d0483f', 2: '#2e9d5b', 3: '#e08a2f', 4: '#8a56c9', 5: '#2a9bb0' };
@@ -351,6 +352,7 @@ let errF = null, prevErrF = null, lastSeenT = -1e9, lastErrSign = 1;
 let seq = 0, chain = Promise.resolve(); const sentAt = new Map();
 let aborted = false, busy = false;
 let lastVision = null, frameErrLogged = false, lastGrip = null;
+const lineSt = {};              // line tracker memory (where the line was, how wide the tape looks)
 let fpsCount = 0, fpsT = performance.now(), wakeLock = null;
 const waiters = new Map(), early = new Map();
 
@@ -505,7 +507,10 @@ async function action(str, ms = 9000) {      // M / T / G / S: the hub does it b
   try {
     const s = await sendCmd(() => str);
     r = await waitLine('D' + s, ms);
-  } finally { if (mode === 'action') mode = 'idle'; }       // also on timeout / link drop
+  } finally {                                               // also on timeout / link drop
+    if (mode === 'action') mode = 'idle';
+    if (str[0] === 'T') M.resetTrack(lineSt);               // new heading: the line is near the centre again
+  }
   if (r !== '1') throw new Error('동작이 중간에 멈췄어요 (' + str + ')');
 }
 
@@ -537,7 +542,9 @@ function followTick(det, cr, dt) {
   if (det.found) {
     errF = errF == null ? det.error : errF * 0.4 + det.error * 0.6;
     const out = C.control(errF, prevErrF, dt, Object.assign({}, cfg, { speed: f.speed }));
-    prevErrF = errF; left = out.left; right = out.right; f.seen++;
+    const t = Math.max(-MAX_TURN, Math.min(MAX_TURN, out.turn));   // legs are straight: never swerve hard
+    const b = f.speed * (1 - 0.5 * Math.abs(t));
+    prevErrF = errF; left = b * (1 + t); right = b * (1 - t); f.seen++;
   } else { errF = prevErrF = null; f.lost++; }           // no line (junction / object): keep going straight
   followCmd = C.toPorts(left, right, cfg);
   if (!f.resync || f.finishing) return;
@@ -636,6 +643,7 @@ async function begin(what) {
   if (busy) throw new Error('이미 동작 중이에요');
   if (!hub || !hub.connected) throw new Error('먼저 허브를 연결하세요');
   busy = true; aborted = false; updateUI();
+  M.resetTrack(lineSt);                                     // the robot was just placed on the line: look around the centre
   await loadProgram();
   requestWake();
   log('▶ ' + what);
@@ -763,9 +771,14 @@ function processFrame(ts) {
   if (proc.width !== W || proc.height !== H) { proc.width = ov.width = W; proc.height = ov.height = H; }
   pctx.drawImage(video, 0, 0, W, H);
   const gray = M.tapeGray(pctx.getImageData(0, 0, W, H).data, W * H, 70);   // colourful things (objects) become white
-  const det = C.detectLine(gray, W, H, { roiTop: cfg.roiTop, threshold: cfg.thrAuto ? null : cfg.thr, maxRunFrac: 0.3 });
-  const usable = det.reason !== 'low-contrast' && det.reason !== 'too-dark';
-  const cr = usable ? M.detectCrossing(gray, W, H, { roiTop: cfg.roiTop, thr: det.thr }) : null;
+  // base: only for the dark threshold + "is there any contrast at all". The line itself is TRACKED:
+  // tape-wide dark runs near where the line was last seen, so other dark things are ignored.
+  const base = C.detectLine(gray, W, H, { roiTop: cfg.roiTop, threshold: cfg.thrAuto ? null : cfg.thr, maxRunFrac: 0.3 });
+  const usable = base.reason !== 'low-contrast' && base.reason !== 'too-dark';
+  let det;
+  if (usable) det = M.trackLine(gray, W, H, base.thr, lineSt, { roiTop: cfg.roiTop });
+  else { lineSt.age = (lineSt.age || 0) + 1; det = { found: false, error: 0, thr: base.thr, y0: base.y0, bands: [], reason: base.reason }; }
+  const cr = usable ? M.detectCrossing(gray, W, H, { roiTop: cfg.roiTop, thr: base.thr, minRows: Math.max(2, Math.round((lineSt.w || 6) * 0.4)) }) : null;
   lastFrameT = performance.now();
   lastVision = { det, cr, t: lastFrameT };
   if (mode === 'follow' && fol) followTick(det, cr, dt);
@@ -795,6 +808,14 @@ function draw(det, cr, gray, W, H) {
   vctx.lineWidth = 2 * dpr;
   vctx.strokeStyle = 'rgba(255,255,255,.5)';
   vctx.beginPath(); vctx.moveTo(0, det.y0 * sy); vctx.lineTo(w, det.y0 * sy); vctx.stroke();
+  if (det.gate) {                                                       // where the tracker looks for the line
+    vctx.strokeStyle = 'rgba(255,255,255,.55)';
+    vctx.setLineDash([4 * dpr, 4 * dpr]);
+    for (const gx of [det.exp - det.gate, det.exp + det.gate]) {
+      vctx.beginPath(); vctx.moveTo((gx + 0.5) * sx, det.y0 * sy); vctx.lineTo((gx + 0.5) * sx, h); vctx.stroke();
+    }
+    vctx.setLineDash([]);
+  }
   vctx.strokeStyle = '#ffd54a';                                         // baseline used for crossings
   vctx.beginPath(); vctx.moveTo(0, mcfg.baseRow * h); vctx.lineTo(w, mcfg.baseRow * h); vctx.stroke();
   if (cr) for (const b of cr.bands) {
