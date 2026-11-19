@@ -125,6 +125,7 @@
   <label class="sl">집는 거리: 바퀴 축 → 집게가 잡는 지점 <span id="vGrab"></span><input id="grab" type="range" min="40" max="240" step="5"></label>
   <label class="sl">내려놓는 위치: 전달 지점에서 앞쪽으로 <span id="vDropOffset"></span><input id="dropOffset" type="range" min="0" max="150" step="5"></label>
   <label class="sl">출발 위치: 바퀴 축이 출발점보다 뒤로 <span id="vStartBack"></span><input id="startBack" type="range" min="0" max="300" step="5"></label>
+  <label class="ck"><input id="sweep" type="checkbox"> 회전 뒤 선이 안 보이면 좌우 30°씩 둘러보고 찾기 (물체를 들고 있을 땐 안 함 · 실험 기능)</label>
   <div><button id="sbOn" type="button">바퀴를 출발점 위에 놓음 (0)</button> <button id="sbCam" type="button">화면 맨 아래를 출발점에 맞춤 (180)</button></div>
   <div class="dims"><label>집게 포트 <select id="gripPort"><option value="auto">자동 찾기</option><option value="none">없음</option><option>C</option><option>D</option><option>E</option><option>F</option></select></label></div>
   <label class="ck"><input id="gripInvert" type="checkbox"> 집게 방향이 반대예요 ("닫기"에 열림)</label>
@@ -220,6 +221,8 @@ for (const [id, v] of [['sbOn', 0], ['sbCam', 180]]) {
 bindRange(mcfg, saveM, 'gripOpenDeg', 'vGripOpenDeg', (v) => (v ? v + '°' : '끝까지'));
 bindRange(mcfg, saveM, 'gripCloseDeg', 'vGripCloseDeg', (v) => (v ? v + '°' : '닿을 때까지'));
 bindRange(mcfg, saveM, 'gripPwm', 'vGripPwm', (v) => v + '%');
+$('sweep').checked = !!mcfg.sweep;
+$('sweep').addEventListener('change', () => { mcfg.sweep = $('sweep').checked; saveM(); });
 $('gripHold').checked = !!mcfg.gripHold;
 $('gripHold').addEventListener('change', () => { mcfg.gripHold = $('gripHold').checked; saveM(); });
 $('gripPort').value = mcfg.gripPort;
@@ -622,13 +625,27 @@ async function recover() {
 }
 
 /** After a turn: look at the line ahead and trim the heading by a few degrees (max ±20° in total). */
-async function alignToLine() {
+async function alignToLine(sweepOK) {
   if (!camOn) return '';
-  let total = 0;
+  const look = async (ms) => {                             // let the robot settle + get a fresh frame
+    await C.sleep(ms);
+    const lv = lastVision;
+    return lv && performance.now() - lv.t <= 300 && lv.det.found ? lv : null;
+  };
+  let total = 0, swept = 0;
   for (let k = 0; k < 3; k++) {
-    await C.sleep(230);                                    // let the robot settle + get a fresh frame
-    const v = lastVision;
-    if (!v || performance.now() - v.t > 300 || !v.det.found) return total ? ` · 선 정렬 ${total > 0 ? '+' : ''}${total}°` : ' · 선 안 보여 정렬 생략';
+    let v = await look(230);
+    if (!v && k === 0 && sweepOK) {                        // line not in view: look 30° left, then 30° right
+      for (const d of [-30, 60]) {
+        await action(`T ${d} ${Math.min(mcfg.turnSpeed, 120)}`);
+        swept += d;
+        v = await look(450);
+        if (v) break;
+      }
+      if (!v) { await action(`T ${-swept} ${Math.min(mcfg.turnSpeed, 120)}`); return ' · 좌우 30° 둘러봤지만 선 없음'; }
+      log(`    선이 안 보여 둘러봄: ${swept > 0 ? '오른쪽' : '왼쪽'} 30°에서 찾음`);
+    }
+    if (!v) return total ? ` · 선 정렬 ${total > 0 ? '+' : ''}${total}°` : ' · 선 안 보여 정렬 생략';
     const e = v.det.error * (cfg.steerInvert ? -1 : 1);
     if (Math.abs(e) < 0.12) break;
     let deg = Math.round(Math.max(-12, Math.min(12, e * 15)));
@@ -713,6 +730,7 @@ async function runMission() {
     if (hubGrip) await gripper(false);
     let first = true;
     let failed = 0;
+    let holding = false;                                    // carrying an object: no searching turns
     for (let i = 0; i < plan.steps.length; i++) {
       const st = plan.steps[i], ts = performance.now(), next = plan.steps[i + 1];
       renderPlan(i);
@@ -726,12 +744,12 @@ async function runMission() {
           if (r.seen < 3 && r.lost > 10) note += ' ⚠ 선을 거의 못 봤어요';
         } else if (st.op === 'turn') {
           await action(`T ${st.deg} ${mcfg.turnSpeed}`);
-          if (next && (next.op === 'leg' || (next.op === 'move' && next.mm > 0))) note = (await alignToLine()).replace(/^ · /, '');
+          if (next && (next.op === 'leg' || (next.op === 'move' && next.mm > 0))) note = (await alignToLine(!!mcfg.sweep && !holding && next.op === 'leg')).replace(/^ · /, '');
         } else if (st.op === 'move') {
           if (st.mm > 0) note = fmtLeg(await followLeg(st.mm, { resync: false, speed: Math.min(cfg.speed, 150) }), st.mm);
           else if (st.mm < 0) await action(`M ${st.mm} ${Math.min(cfg.speed, 200)}`);
-        } else if (st.op === 'grip') await gripper(true, st.pick);
-        else if (st.op === 'release') await gripper(false);
+        } else if (st.op === 'grip') { await gripper(true, st.pick); if (st.pick) holding = true; }
+        else if (st.op === 'release') { await gripper(false); holding = false; }
       } catch (e) {
         if (aborted) throw e;                              // deliberate stop
         failed++;
