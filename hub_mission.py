@@ -5,7 +5,8 @@
 #                     While moving it prints odometry "O<leg> <deg>" every ~120 ms.
 #   M mm speed        straight move by wheel rotation (mm, - = backwards)      -> "D<seq> 1"
 #   T deg speed       turn in place by wheel rotation (deg, + = right)         -> "D<seq> 1"
-#   G dir speed hold maxdeg   gripper until it stalls (or maxdeg / 2.5 s)      -> "D<seq> 1"
+#   G dir power hold maxdeg   gripper at limited force (power = duty %) until it stops moving,
+#                             maxdeg is reached or 3 s pass; prints "GR <deg> <why>"  -> "D<seq> 1"
 #   S                 stop everything                                          -> "D<seq> 1"
 #   Q                 quit
 # Any new command aborts a running M / T / G ("D<seq> 0").
@@ -102,32 +103,45 @@ async def wheels(sa, sb, target, speed):
     return ok
 
 
-async def do_grip(g, direction, speed, hold, maxdeg):
+async def do_grip(g, direction, power, hold, maxdeg):
+    """Move the gripper with LIMITED force: power = motor duty in % (it cannot push harder than
+    that), until it stops moving (object / end stop), maxdeg is reached, or 3 s pass.
+    Prints "GR <degrees moved> <stall|angle|time|cmd>"."""
     if g is None:
         return False
     start = p0 = pos(g)
     t0 = moved = time.ticks_ms()
-    motor.run(g, sgn(direction) * speed)
+    try:
+        motor.set_duty_cycle(g, sgn(direction) * max(0, min(100, power)) * 100)
+    except Exception:
+        motor.run(g, sgn(direction) * 250)           # firmware without duty control: speed mode
+    why = "time"
     while True:
         await runloop.sleep_ms(20)
         now = time.ticks_ms()
         p = pos(g)
-        if abs(p - p0) > 3:
+        if abs(p - p0) > 2:
             p0, moved = p, now
-        elif time.ticks_diff(now, moved) > 250:      # stalled: closed on the object / fully open
+        elif time.ticks_diff(now, moved) > 300:      # stopped moving: touching the object / end stop
+            why = "stall"
             break
         if maxdeg > 0 and abs(p - start) >= maxdeg:
+            why = "angle"
             break
-        if time.ticks_diff(now, t0) > 2500 or new_cmd():
+        if time.ticks_diff(now, t0) > 3000:
+            break
+        if new_cmd():
+            why = "cmd"
             break
     if hold:
         try:
-            motor.stop(g, stop=motor.HOLD)           # keep squeezing position
+            motor.stop(g, stop=motor.HOLD)           # stay at this position (no extra squeeze)
         except Exception:
             motor.stop(g)
     else:
         motor.stop(g)
-    return True
+    print("GR " + str(pos(g) - start) + " " + why)
+    return why != "cmd"
 
 
 async def main():

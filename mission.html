@@ -127,7 +127,10 @@
   <label class="sl">출발 위치: 바퀴 축이 출발점보다 뒤로 <span id="vStartBack"></span><input id="startBack" type="range" min="0" max="300" step="5"></label>
   <div class="dims"><label>집게 포트 <select id="gripPort"><option value="auto">자동 찾기</option><option value="none">없음</option><option>C</option><option>D</option><option>E</option><option>F</option></select></label></div>
   <label class="ck"><input id="gripInvert" type="checkbox"> 집게 방향이 반대예요 ("닫기"에 열림)</label>
-  <label class="sl">집게 여는 각도 (0 = 끝까지) <span id="vGripOpenDeg"></span><input id="gripOpenDeg" type="range" min="0" max="360" step="10"></label>
+  <label class="sl">집게 힘 (약하면 중간에 멈춰요. 이 집게는 60% 이상 필요) <span id="vGripPwm"></span><input id="gripPwm" type="range" min="30" max="100" step="5"></label>
+  <label class="sl">닫는 최대 각도 (0 = 물체에 닿아 멈출 때까지) <span id="vGripCloseDeg"></span><input id="gripCloseDeg" type="range" min="0" max="200" step="5"></label>
+  <label class="sl">여는 각도 (0 = 끝까지) <span id="vGripOpenDeg"></span><input id="gripOpenDeg" type="range" min="0" max="200" step="5"></label>
+  <label class="ck"><input id="gripHold" type="checkbox"> 잡은 뒤 모터로 위치 유지 (끄면 마찰로만 버팀)</label>
 </details>
 
 <div class="card">
@@ -168,7 +171,7 @@ const MDEFAULTS = {
   stub: { practice: null },
   targets: { practice: [], comp: [] },
   camOffset: 185, baseRow: 0.85, track: 128, turnSpeed: 180, grab: 120, dropOffset: 30, clear: 80, startBack: 0,
-  gripPort: 'auto', gripInvert: false, gripOpenDeg: 0,
+  gripPort: 'auto', gripInvert: false, gripOpenDeg: 0, gripCloseDeg: 0, gripPwm: 60, gripHold: true,
 };
 let mcfg = JSON.parse(JSON.stringify(MDEFAULTS));
 try {
@@ -204,6 +207,10 @@ bindRange(mcfg, saveM, 'grab', 'vGrab', (v) => v + ' mm', replan);
 bindRange(mcfg, saveM, 'dropOffset', 'vDropOffset', (v) => v + ' mm', replan);
 bindRange(mcfg, saveM, 'startBack', 'vStartBack', (v) => v + ' mm');
 bindRange(mcfg, saveM, 'gripOpenDeg', 'vGripOpenDeg', (v) => (v ? v + '°' : '끝까지'));
+bindRange(mcfg, saveM, 'gripCloseDeg', 'vGripCloseDeg', (v) => (v ? v + '°' : '닿을 때까지'));
+bindRange(mcfg, saveM, 'gripPwm', 'vGripPwm', (v) => v + '%');
+$('gripHold').checked = !!mcfg.gripHold;
+$('gripHold').addEventListener('change', () => { mcfg.gripHold = $('gripHold').checked; saveM(); });
 $('gripPort').value = mcfg.gripPort;
 $('gripPort').addEventListener('change', () => { mcfg.gripPort = $('gripPort').value; saveM(); });
 $('gripInvert').checked = !!mcfg.gripInvert;
@@ -234,7 +241,7 @@ const setText = (id, t) => { $(id).textContent = t; };
 function settingsLine() {
   return `설정: 속도 ${cfg.speed}, 조향 ${cfg.kp}/${cfg.kd}, 영역 ${cfg.roiTop}, 검정기준 ${cfg.thrAuto ? '자동' : cfg.thr}, ` +
     `카메라거리 ${mcfg.camOffset}mm@${Math.round(mcfg.baseRow * 100)}%, 바퀴간격 ${mcfg.track}mm, 회전속도 ${mcfg.turnSpeed}, ` +
-    `집는거리 ${mcfg.grab}mm, 집게 ${hubGrip ? hubGripPort : mcfg.gripPort}${mcfg.gripInvert ? '(반대)' : ''},좌우반대 ${cfg.swapLR}, 앞뒤반대 ${cfg.invertFB}, 조향반대 ${cfg.steerInvert}`;
+    `집는거리 ${mcfg.grab}mm, 집게 ${hubGrip ? hubGripPort : mcfg.gripPort}${mcfg.gripInvert ? '(반대)' : ''} 힘 ${mcfg.gripPwm}% 닫기 ${mcfg.gripCloseDeg || '닿을때까지'} 열기 ${mcfg.gripOpenDeg || '끝까지'} 유지 ${mcfg.gripHold}, 좌우반대 ${cfg.swapLR}, 앞뒤반대 ${cfg.invertFB}, 조향반대 ${cfg.steerInvert}`;
 }
 $('btnCopy').addEventListener('click', async () => {
   const text = settingsLine() + '\n' + logLines.join('\n');
@@ -342,7 +349,7 @@ let followCmd = [0, 0], lastFrameT = 0, lastProcT = 0;
 let errF = null, prevErrF = null, lastSeenT = -1e9, lastErrSign = 1;
 let seq = 0, chain = Promise.resolve(); const sentAt = new Map();
 let aborted = false, busy = false;
-let lastVision = null, frameErrLogged = false;
+let lastVision = null, frameErrLogged = false, lastGrip = null;
 let fpsCount = 0, fpsT = performance.now(), wakeLock = null;
 const waiters = new Map(), early = new Map();
 
@@ -384,6 +391,7 @@ function onLine(line) {
     return;
   }
   if (line.startsWith('READY')) { hubGrip = !line.includes('NOGRIP') && line.includes('GRIP'); hubGripPort = hubGrip ? (line.split(' ')[2] || '?') : ''; gotLine('READY', line); }
+  else if (line.startsWith('GR ')) { const p = line.split(' '); lastGrip = { deg: +p[1], why: p[2] }; }
   else if (line === 'DEADMAN') log('명령이 끊겨서 허브가 스스로 멈췄어요');
   else if (line === 'NO_WHEELS') log('A/B 포트에 모터가 없어요');
   else if (line === 'BYE') { /* program ended on purpose */ }
@@ -609,10 +617,15 @@ async function alignToLine() {
   return total ? ` · 선 정렬 ${total > 0 ? '+' : ''}${total}°` : ' · 정렬 불필요';
 }
 
-const closeDir = () => (mcfg.gripInvert ? 1 : -1);
+const closeDir = () => (mcfg.gripInvert ? -1 : 1);       // Auto's gripper: motor + closes, - opens
 async function gripper(close) {
   if (!hubGrip) { log('집게 없음: 건너뜀'); return; }
-  await action(`G ${close ? closeDir() : -closeDir()} ${GRIP_SPEED} ${close ? 1 : 0} ${close ? 0 : mcfg.gripOpenDeg}`, 6000);
+  lastGrip = null;
+  await action(`G ${close ? closeDir() : -closeDir()} ${mcfg.gripPwm} ${close && mcfg.gripHold ? 1 : 0} ${close ? mcfg.gripCloseDeg : mcfg.gripOpenDeg}`, 6000);
+  if (lastGrip) {
+    const why = { stall: close ? '물체나 끝에 닿아 멈춤' : '끝에 닿아 멈춤', angle: '정한 각도까지', time: '3초 시간 제한', cmd: '중단됨' }[lastGrip.why] || lastGrip.why;
+    log(`    집게 ${close ? '닫기' : '열기'}: ${Math.abs(lastGrip.deg)}° 움직임 (${why}, 힘 ${mcfg.gripPwm}%)` + (Math.abs(lastGrip.deg) < 5 ? ' ⚠ 거의 안 움직였어요: 이미 끝이거나 힘이 약해요' : ''));
+  }
 }
 
 async function begin(what) {
