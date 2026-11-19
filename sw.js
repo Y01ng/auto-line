@@ -1,7 +1,8 @@
 // Offline support: always try the network first (so updates on GitHub show up right away),
 // fall back to the copy saved on the phone when there is no internet.
-const CACHE = 'auto-line-v1';
-const ASSETS = ['./', './index.html', './core.js', './hub_follow.py', './manifest.webmanifest', './icon.svg'];
+const CACHE = 'auto-line-v2';
+const ASSETS = ['./', './index.html', './mission.html', './core.js', './mission.js', './hub_follow.py', './hub_mission.py',
+  './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)));
@@ -16,7 +17,7 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET' || !e.request.url.startsWith(self.location.origin)) return;
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request, { cache: 'no-cache' })
       .then((r) => {
         if (r.ok) { const copy = r.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); }
         return r;

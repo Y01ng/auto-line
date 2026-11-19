@@ -152,7 +152,23 @@
     /** Must be called from a user gesture (button tap). */
     async connect() {
       this.device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SERVICE] }] });
-      this.device.addEventListener('gattserverdisconnected', () => this.h.onDisconnect && this.h.onDisconnect());
+      this.device.addEventListener('gattserverdisconnected', () => {
+        for (const [, w] of this.waiters) w(null);          // fail pending requests right away
+        this.waiters.clear();
+        this.h.onDisconnect && this.h.onDisconnect();
+      });
+      return this._open();
+    }
+
+    /** Reconnect to the same hub after a drop (no chooser, no user gesture needed). */
+    async reconnect() {
+      if (!this.device) throw new Error('연결했던 허브가 없어요');
+      if (this.connected) return null;
+      this.rxbuf = []; this.lineBuf = ''; this.lock = Promise.resolve();
+      return this._open();
+    }
+
+    async _open() {
       const server = await this.device.gatt.connect();
       const svc = await server.getPrimaryService(SERVICE);
       this.rx = await svc.getCharacteristic(RX_CHAR);
@@ -227,7 +243,7 @@
           this.waiters.delete(respId);
           reject(new Error('허브 응답 없음 (0x' + respId.toString(16) + ')'));
         }, timeoutMs);
-        this.waiters.set(respId, (m) => { clearTimeout(t); resolve(m); });
+        this.waiters.set(respId, (m) => { clearTimeout(t); m ? resolve(m) : reject(new Error('허브 연결이 끊겼어요')); });
         this.send(msg).catch((e) => { clearTimeout(t); this.waiters.delete(respId); reject(e); });
       });
     }
@@ -307,7 +323,8 @@
     if (res.darkFrac > 0.6) { res.reason = 'too-dark'; return res; }
 
     const bandH = (H - y0) / nb;
-    const maxRun = W * 0.6, minRun = Math.max(2, Math.round(W * 0.015));
+    // maxRunFrac: rows whose dark run is wider than this are side branches / crossings, not the line
+    const maxRun = W * (o.maxRunFrac ?? 0.6), minRun = Math.max(2, Math.round(W * 0.015));
     for (let b = 0; b < nb; b++) {
       const ya = Math.round(y0 + b * bandH), yb = Math.round(y0 + (b + 1) * bandH);
       const centers = [];

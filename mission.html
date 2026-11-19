@@ -1,0 +1,810 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Auto 미션</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#14171c">
+<style>
+  :root { --bg:#14171c; --card:#1e232b; --line:#2c333d; --text:#e9edf2; --muted:#98a2b0;
+    --go:#2e9d5b; --stop:#d0483f; --accent:#3f7fe0; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--text);
+    font:16px/1.4 system-ui, -apple-system, "Malgun Gothic", "Noto Sans KR", sans-serif; }
+  body { padding:12px 16px 60px; max-width:640px; margin:0 auto; }
+  h1 { font-size:18px; margin:4px 0 8px; display:flex; justify-content:space-between; align-items:baseline; }
+  h1 a { font-size:13px; color:var(--accent); font-weight:400; }
+  .status { display:flex; flex-wrap:wrap; gap:6px 14px; font-size:13px; color:var(--muted); margin-bottom:10px; }
+  .status b { color:var(--text); font-weight:600; }
+  .view { position:relative; background:#000; border-radius:10px; overflow:hidden; min-height:100px; }
+  #view { display:block; width:100%; height:auto; }
+  #lineinfo { position:absolute; left:8px; top:8px; padding:3px 8px; border-radius:6px; background:rgba(0,0,0,.6); font-size:14px; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:10px 0; }
+  .row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin:8px 0; }
+  button { font:inherit; color:var(--text); background:var(--card); border:1px solid var(--line);
+    border-radius:10px; padding:12px 6px; touch-action:manipulation; }
+  button:disabled { opacity:.4; }
+  button.go { background:var(--go); border-color:var(--go); font-weight:700; }
+  button.stop { background:var(--stop); border-color:var(--stop); font-weight:700; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin:10px 0; }
+  summary { cursor:pointer; font-weight:600; padding:2px 0; }
+  h2 { font-size:15px; margin:2px 0 8px; }
+  label.sl { display:grid; grid-template-columns:1fr auto; gap:2px 8px; margin:10px 0 2px; font-size:14px; }
+  label.sl input[type=range] { grid-column:1 / -1; width:100%; }
+  label.ck { display:flex; gap:8px; align-items:flex-start; margin:10px 0; font-size:14px; }
+  .hint { color:var(--muted); font-size:13px; margin:4px 0; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0; }
+  .chip { padding:7px 11px; border-radius:16px; font-size:14px; }
+  .chip.sel { outline:2px solid var(--accent); background:#243a5c; }
+  #map { width:100%; height:auto; background:#e9edf2; border-radius:8px; touch-action:manipulation; display:block; }
+  .dims { display:flex; gap:8px; margin:6px 0; font-size:14px; flex-wrap:wrap; }
+  .dims input, select { width:64px; font:inherit; padding:5px; border-radius:6px; border:1px solid var(--line); background:#11151a; color:var(--text); }
+  select { width:auto; }
+  ol#plan { margin:6px 0 0; padding-left:26px; font-size:13px; color:var(--muted); max-height:180px; overflow:auto; }
+  ol#plan li.cur { color:var(--text); font-weight:700; }
+  #planErr { color:#ff8a80; font-size:14px; }
+  pre#log { white-space:pre-wrap; font-size:12px; color:var(--muted); max-height:260px; overflow:auto; margin:6px 0 0; user-select:text; }
+  #video { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
+</style>
+</head>
+<body>
+<h1>Auto 미션 <a href="index.html">← 기본 선 따라가기 / 바퀴 방향 맞추기</a></h1>
+<div class="status">
+  <span>허브 <b id="stHub">연결 안 됨</b></span>
+  <span>카메라 <b id="stCam">꺼짐</b></span>
+  <span>응답 <b id="stLat">-</b></span>
+  <span>화면 <b id="stFps">-</b></span>
+</div>
+
+<div class="view">
+  <canvas id="view" width="320" height="240"></canvas>
+  <div id="lineinfo">카메라 꺼짐</div>
+</div>
+
+<div class="row">
+  <button id="btnHub">① 허브 연결</button>
+  <button id="btnCam">② 카메라 켜기</button>
+  <button id="btnGo" class="go">▶ 미션 출발</button>
+  <button id="btnStop" class="stop">■ 정지</button>
+</div>
+
+<div class="card">
+  <h2>지도와 목표</h2>
+  <div class="chips">
+    <button class="chip" data-map="practice">연습 트랙 (2자)</button>
+    <button class="chip" data-map="comp">대회 지도</button>
+  </div>
+  <div class="dims" id="dims">
+    <label>가로 <input id="pw" type="number" inputmode="numeric" min="15" max="200">cm</label>
+    <label>위 세로 <input id="ph1" type="number" inputmode="numeric" min="15" max="200">cm</label>
+    <label>아래 세로 <input id="ph2" type="number" inputmode="numeric" min="15" max="200">cm</label>
+  </div>
+  <p class="hint">아래에서 하나를 고른 뒤, 지도에서 위치(점)를 누르세요. 출발은 같은 점을 다시 누르면 방향이 바뀌어요.</p>
+  <div class="chips" id="editChips"></div>
+  <svg id="map" viewBox="0 0 100 100"></svg>
+  <p class="hint" style="margin-top:8px">가져올 순서대로 누르세요:</p>
+  <div class="chips" id="targetChips"></div>
+  <div id="planErr"></div>
+  <details><summary>계획된 동작 <span id="planSum" class="hint"></span></summary><ol id="plan"></ol></details>
+</div>
+
+<details class="card" open>
+  <summary>하나씩 테스트</summary>
+  <p class="hint">결과는 아래 "기록"에 숫자로 남아요.</p>
+  <div class="row3">
+    <button data-test="cross">다음 모서리·교차로까지 가서 서기</button>
+    <button data-test="right">오른쪽 90°</button>
+    <button data-test="left">왼쪽 90°</button>
+    <button data-test="fwd">200mm 직진</button>
+    <button data-test="back">200mm 후진</button>
+    <button data-test="free">선만 따라가기</button>
+    <button data-test="close">집게 닫기</button>
+    <button data-test="open">집게 열기</button>
+    <button data-test="uturn">180° 회전</button>
+  </div>
+</details>
+
+<details class="card">
+  <summary>주행 설정</summary>
+  <label class="sl">속도 <span id="vSpeed"></span><input id="speed" type="range" min="100" max="500" step="10"></label>
+  <label class="sl">조향 세기 <span id="vKp"></span><input id="kp" type="range" min="0" max="2" step="0.05"></label>
+  <label class="sl">흔들림 억제 <span id="vKd"></span><input id="kd" type="range" min="0" max="3" step="0.1"></label>
+  <label class="sl">보는 영역 (화면 위에서부터 제외) <span id="vRoi"></span><input id="roiTop" type="range" min="0.1" max="0.8" step="0.05"></label>
+  <label class="ck"><input id="thrAuto" type="checkbox"> 검정 기준 자동</label>
+  <label class="sl" id="thrRow">검정 기준 <span id="vThr"></span><input id="thr" type="range" min="20" max="200" step="1"></label>
+</details>
+
+<details class="card" open>
+  <summary>거리·회전 보정</summary>
+  <label class="sl">카메라 거리: 바퀴 축 → 화면 노란 기준선 <span id="vCamOffset"></span><input id="camOffset" type="range" min="80" max="300" step="5"></label>
+  <label class="sl">노란 기준선 높이 <span id="vBaseRow"></span><input id="baseRow" type="range" min="0.5" max="0.97" step="0.01"></label>
+  <label class="sl">회전 보정: 바퀴 사이 간격 (90°가 모자라면 올리기) <span id="vTrack"></span><input id="track" type="range" min="80" max="220" step="1"></label>
+  <label class="sl">회전 속도 <span id="vTurnSpeed"></span><input id="turnSpeed" type="range" min="80" max="350" step="10"></label>
+  <label class="sl">집는 거리: 바퀴 축 → 집게가 잡는 지점 <span id="vGrab"></span><input id="grab" type="range" min="40" max="240" step="5"></label>
+  <label class="sl">내려놓는 위치: 전달 지점에서 앞쪽으로 <span id="vDropOffset"></span><input id="dropOffset" type="range" min="0" max="150" step="5"></label>
+  <label class="sl">출발 위치: 바퀴 축이 출발점보다 뒤로 <span id="vStartBack"></span><input id="startBack" type="range" min="0" max="300" step="5"></label>
+  <div class="dims"><label>집게 포트 <select id="gripPort"><option value="">없음</option><option>C</option><option>D</option><option>E</option><option>F</option></select></label></div>
+  <label class="ck"><input id="gripInvert" type="checkbox"> 집게 방향이 반대예요 ("닫기"에 열림)</label>
+  <label class="sl">집게 여는 각도 (0 = 끝까지) <span id="vGripOpenDeg"></span><input id="gripOpenDeg" type="range" min="0" max="360" step="10"></label>
+</details>
+
+<div class="card">
+  <h2 style="display:flex;justify-content:space-between;align-items:center">기록
+    <span><button id="btnCopy" class="chip">복사</button> <button id="btnClear" class="chip">지우기</button></span></h2>
+  <pre id="log"></pre>
+</div>
+
+<video id="video" playsinline muted autoplay></video>
+<canvas id="proc" hidden></canvas>
+<canvas id="ov" hidden></canvas>
+
+<script src="core.js"></script>
+<script src="mission.js"></script>
+<script>
+'use strict';
+const C = SpikeCore, M = Mission;
+const $ = (id) => document.getElementById(id);
+const PROG_SLOT = 19, CMD_SLOT = 18;
+const WHEEL_MM = 56, DEG_PER_MM = 360 / (Math.PI * WHEEL_MM);
+const RESYNC_TOL = 50;          // mm: crossing must appear within this of where odometry expects it
+const GRIP_SPEED = 250;
+const enc = (s) => new TextEncoder().encode(s);
+const OBJ_COLORS = { 1: '#d0483f', 2: '#2e9d5b', 3: '#e08a2f', 4: '#8a56c9', 5: '#2a9bb0' };
+const DIR_ARROW = ['→', '↓', '←', '↑'];
+
+// ---------- settings ----------
+// shared with index.html (line following + wheel directions)
+const DEFAULTS = { speed: 200, kp: 0.9, kd: 1.0, roiTop: 0.4, thrAuto: true, thr: 90, swapLR: false, invertFB: false, steerInvert: false };
+let cfg = Object.assign({}, DEFAULTS);
+try { Object.assign(cfg, JSON.parse(localStorage.getItem('autoLineCfg') || '{}')); } catch (e) {}
+const saveCfg = () => { try { localStorage.setItem('autoLineCfg', JSON.stringify(cfg)); } catch (e) {} };
+
+const MDEFAULTS = {
+  map: 'practice', pw: 46, ph1: 46, ph2: 46,
+  objs: { practice: {}, comp: { 1: '18,0', 2: '36,37', 3: '54,74', 4: '-23,0', 5: '-23,0' } },
+  start: { practice: { node: '0,0', heading: 0 }, comp: { node: '69,0', heading: 2 } },
+  stub: { practice: null },
+  targets: { practice: [], comp: [] },
+  camOffset: 185, baseRow: 0.85, track: 128, turnSpeed: 180, grab: 120, dropOffset: 30, clear: 80, startBack: 0,
+  gripPort: '', gripInvert: false, gripOpenDeg: 0,
+};
+let mcfg = JSON.parse(JSON.stringify(MDEFAULTS));
+try {
+  const saved = JSON.parse(localStorage.getItem('autoMissionCfg') || '{}');
+  for (const k of Object.keys(saved)) {
+    if (saved[k] && typeof saved[k] === 'object' && !Array.isArray(saved[k]) && mcfg[k]) Object.assign(mcfg[k], saved[k]);
+    else mcfg[k] = saved[k];
+  }
+} catch (e) {}
+const saveM = () => { try { localStorage.setItem('autoMissionCfg', JSON.stringify(mcfg)); } catch (e) {} };
+
+function bindRange(obj, save, id, valId, fmt, after) {
+  const el = $(id);
+  el.value = obj[id];
+  const show = () => { $(valId).textContent = fmt(obj[id]); };
+  el.addEventListener('input', () => { obj[id] = parseFloat(el.value); show(); save(); after && after(); });
+  show();
+}
+bindRange(cfg, saveCfg, 'speed', 'vSpeed', (v) => v + ' °/s');
+bindRange(cfg, saveCfg, 'kp', 'vKp', (v) => v.toFixed(2));
+bindRange(cfg, saveCfg, 'kd', 'vKd', (v) => v.toFixed(1));
+bindRange(cfg, saveCfg, 'roiTop', 'vRoi', (v) => Math.round(v * 100) + '%');
+bindRange(cfg, saveCfg, 'thr', 'vThr', (v) => String(v));
+$('thrAuto').checked = !!cfg.thrAuto;
+$('thrAuto').addEventListener('change', () => { cfg.thrAuto = $('thrAuto').checked; saveCfg(); updateUI(); });
+const replan = () => renderPlan();
+bindRange(mcfg, saveM, 'camOffset', 'vCamOffset', (v) => v + ' mm');
+bindRange(mcfg, saveM, 'baseRow', 'vBaseRow', (v) => Math.round(v * 100) + '%');
+bindRange(mcfg, saveM, 'track', 'vTrack', (v) => v + ' mm');
+bindRange(mcfg, saveM, 'turnSpeed', 'vTurnSpeed', (v) => v + ' °/s');
+bindRange(mcfg, saveM, 'grab', 'vGrab', (v) => v + ' mm', replan);
+bindRange(mcfg, saveM, 'dropOffset', 'vDropOffset', (v) => v + ' mm', replan);
+bindRange(mcfg, saveM, 'startBack', 'vStartBack', (v) => v + ' mm');
+bindRange(mcfg, saveM, 'gripOpenDeg', 'vGripOpenDeg', (v) => (v ? v + '°' : '끝까지'));
+$('gripPort').value = mcfg.gripPort;
+$('gripPort').addEventListener('change', () => { mcfg.gripPort = $('gripPort').value; saveM(); });
+$('gripInvert').checked = !!mcfg.gripInvert;
+$('gripInvert').addEventListener('change', () => { mcfg.gripInvert = $('gripInvert').checked; saveM(); });
+for (const id of ['pw', 'ph1', 'ph2']) {
+  $(id).value = mcfg[id];
+  $(id).addEventListener('change', () => {
+    const v = Math.round(parseFloat($(id).value));
+    if (!(v >= 15 && v <= 200)) { $(id).value = mcfg[id]; return; }
+    mcfg[id] = v;
+    mcfg.objs.practice = {}; mcfg.targets.practice = []; mcfg.stub.practice = null;   // node ids changed
+    mcfg.start.practice = { node: '0,0', heading: 0 };
+    saveM(); renderMap();
+  });
+}
+
+// ---------- log ----------
+const logLines = [];
+function log(t) {
+  const time = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+  logLines.push(`[${time}] ${t}`);
+  if (logLines.length > 400) logLines.shift();
+  const el = $('log');
+  el.textContent = logLines.join('\n');
+  el.scrollTop = el.scrollHeight;
+}
+const setText = (id, t) => { $(id).textContent = t; };
+function settingsLine() {
+  return `설정: 속도 ${cfg.speed}, 조향 ${cfg.kp}/${cfg.kd}, 영역 ${cfg.roiTop}, 검정기준 ${cfg.thrAuto ? '자동' : cfg.thr}, ` +
+    `카메라거리 ${mcfg.camOffset}mm@${Math.round(mcfg.baseRow * 100)}%, 바퀴간격 ${mcfg.track}mm, 회전속도 ${mcfg.turnSpeed}, ` +
+    `집는거리 ${mcfg.grab}mm, 집게 ${mcfg.gripPort || '없음'}${mcfg.gripInvert ? '(반대)' : ''}, 좌우반대 ${cfg.swapLR}, 앞뒤반대 ${cfg.invertFB}, 조향반대 ${cfg.steerInvert}`;
+}
+$('btnCopy').addEventListener('click', async () => {
+  const text = settingsLine() + '\n' + logLines.join('\n');
+  try { await navigator.clipboard.writeText(text); log('기록을 복사했어요'); }
+  catch (e) { const r = document.createRange(); r.selectNodeContents($('log')); const s = getSelection(); s.removeAllRanges(); s.addRange(r); log('자동 복사 실패: 선택된 글자를 길게 눌러 복사하세요'); }
+});
+$('btnClear').addEventListener('click', () => { logLines.length = 0; $('log').textContent = ''; });
+
+// ---------- map / plan ----------
+let editSel = 'start';
+function baseTrack() { return mcfg.map === 'comp' ? M.TRACK : M.practiceTrack(mcfg.pw, mcfg.ph1, mcfg.ph2); }
+function buildTrack() {
+  const B = baseTrack(), G = M.buildGraph(B);
+  const objs = [];
+  for (let id = 1; id <= 5; id++) {
+    const node = mcfg.objs[mcfg.map][id];
+    if (node && G.has(node)) objs.push({ id, name: '물체 ' + id, node });
+  }
+  let start = mcfg.start[mcfg.map];
+  if (!start || !G.has(start.node)) start = B.start;
+  let stubs = B.stubs;
+  if (mcfg.map === 'practice' && mcfg.stub.practice && G.has(mcfg.stub.practice)) stubs = [mcfg.stub.practice];
+  return Object.assign({}, B, { objects: objs, start: { node: start.node, heading: start.heading }, stubs });
+}
+function currentPlan() {
+  const T = buildTrack();
+  const targets = (mcfg.targets[mcfg.map] || []).filter((id) => T.objects.some((o) => o.id === id));
+  const plan = M.compileMission(T, targets, { grab: mcfg.grab, dropOffset: mcfg.dropOffset, clear: mcfg.clear });
+  return { T, targets, plan };
+}
+function renderPlan(curIdx) {
+  const { targets, plan } = currentPlan();
+  $('planErr').textContent = plan.error ? '⚠ ' + plan.error : '';
+  $('planSum').textContent = targets.length ? `(목표 ${targets.join(' → ')}, ${plan.steps.length}단계)` : '(목표 없음)';
+  $('plan').innerHTML = plan.steps.map((s, i) => `<li${i === curIdx ? ' class="cur"' : ''}>${M.describe(s)}</li>`).join('');
+  if (curIdx != null) { const li = $('plan').children[curIdx]; li && li.scrollIntoView({ block: 'nearest' }); }
+  return plan;
+}
+function renderMap() {
+  const T = buildTrack(), G = M.buildGraph(T);
+  let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+  for (const n of G.values()) { x0 = Math.min(x0, n.x); x1 = Math.max(x1, n.x); y0 = Math.min(y0, n.y); y1 = Math.max(y1, n.y); }
+  const pad = 12;
+  $('map').setAttribute('viewBox', `${x0 - pad} ${y0 - pad} ${x1 - x0 + 2 * pad} ${y1 - y0 + 2 * pad}`);
+  let s = '';
+  if (T.box) s += `<rect x="${T.box[0] - 6}" y="${T.box[1] - 6}" width="12" height="12" fill="#4a7dc9" stroke="#111" stroke-width="2"/>`;
+  for (const n of G.values()) for (const a of n.adj) {
+    const m = G.get(a.to);
+    if (n.id < a.to) s += `<line x1="${n.x}" y1="${n.y}" x2="${m.x}" y2="${m.y}" stroke="#111" stroke-width="2" stroke-linecap="square"/>`;
+  }
+  for (const [x, y] of T.bars || []) s += `<line x1="${x}" y1="${y - 5}" x2="${x}" y2="${y + 5}" stroke="#111" stroke-width="2"/>`;
+  for (const st of T.stubs) { const n = G.get(st); if (n) s += `<rect x="${n.x - 4.5}" y="${n.y - 4.5}" width="9" height="9" fill="none" stroke="#2e9d5b" stroke-width="1.2" stroke-dasharray="2 1.5"/>`; }
+  const sn = G.get(T.start.node);
+  s += `<circle cx="${sn.x}" cy="${sn.y}" r="4.6" fill="#fff" stroke="#3f7fe0" stroke-width="1.4"/><text x="${sn.x}" y="${sn.y + 2.2}" font-size="6.5" text-anchor="middle" fill="#3f7fe0" font-weight="700">${DIR_ARROW[T.start.heading]}</text>`;
+  const seen = {};
+  for (const o of T.objects) {
+    const n = G.get(o.node); const k = seen[o.node] = (seen[o.node] || 0) + 1;
+    const cx = n.x + (k - 1) * 5.5, cy = n.y - (k - 1) * 5.5;
+    s += `<circle cx="${cx}" cy="${cy}" r="3.8" fill="${OBJ_COLORS[o.id]}"/><text x="${cx}" y="${cy + 2}" font-size="5.5" text-anchor="middle" fill="#fff" font-weight="700">${o.id}</text>`;
+  }
+  for (const n of G.values()) s += `<circle cx="${n.x}" cy="${n.y}" r="7" fill="transparent" data-node="${n.id}"/>`;
+  $('map').innerHTML = s;
+
+  $('dims').style.display = mcfg.map === 'practice' ? '' : 'none';
+  for (const b of document.querySelectorAll('[data-map]')) b.classList.toggle('sel', b.dataset.map === mcfg.map);
+  const items = [['start', '출발'], ...(mcfg.map === 'practice' ? [['stub', '전달 위치']] : []),
+    ...[1, 2, 3, 4, 5].map((i) => ['o' + i, '물체 ' + i]), ['del', '물체 빼기']];
+  $('editChips').innerHTML = items.map(([k, t]) => `<button class="chip${editSel === k ? ' sel' : ''}" data-edit="${k}">${t}</button>`).join('');
+  const tg = mcfg.targets[mcfg.map] || [];
+  $('targetChips').innerHTML = T.objects.map((o) => {
+    const i = tg.indexOf(o.id);
+    return `<button class="chip${i >= 0 ? ' sel' : ''}" data-target="${o.id}">물체 ${o.id}${i >= 0 ? ' · ' + (i + 1) + '번째' : ''}</button>`;
+  }).join('') + (T.objects.length ? '<button class="chip" data-target="clear">순서 지우기</button>' : '<span class="hint">먼저 지도에 물체를 놓으세요</span>');
+  renderPlan();
+}
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-map],[data-edit],[data-target],[data-node],[data-test]');
+  if (!t) return;
+  if (t.dataset.map) { mcfg.map = t.dataset.map; saveM(); renderMap(); }
+  else if (t.dataset.edit) { editSel = t.dataset.edit; renderMap(); }
+  else if (t.dataset.target) {
+    const tg = mcfg.targets[mcfg.map] = mcfg.targets[mcfg.map] || [];
+    if (t.dataset.target === 'clear') tg.length = 0;
+    else { const id = +t.dataset.target, i = tg.indexOf(id); if (i >= 0) tg.splice(i, 1); else tg.push(id); }
+    saveM(); renderMap();
+  } else if (t.dataset.node) {
+    const node = t.dataset.node, G = M.buildGraph(baseTrack());
+    if (editSel === 'start') {
+      const dirs = G.get(node).adj.map((a) => a.dir), cur = mcfg.start[mcfg.map];
+      const i = cur && cur.node === node ? dirs.indexOf(cur.heading) : -1;
+      mcfg.start[mcfg.map] = { node, heading: dirs[(i + 1) % dirs.length] };
+    } else if (editSel === 'stub') mcfg.stub.practice = node;
+    else if (editSel === 'del') { for (const id of Object.keys(mcfg.objs[mcfg.map])) if (mcfg.objs[mcfg.map][id] === node) delete mcfg.objs[mcfg.map][id]; }
+    else if (editSel[0] === 'o') mcfg.objs[mcfg.map][+editSel.slice(1)] = node;
+    saveM(); renderMap();
+  } else if (t.dataset.test) runTest(t.dataset.test);
+});
+
+// ---------- state ----------
+let hub = null, hubReady = false, hubGrip = false, loadedCfg = null, reloading = false, senderRunning = false;
+let camOn = false, stream = null;
+let mode = 'idle';              // idle | follow | free | action
+let fol = null, legId = 0, odo = { leg: -1, deg: 0, t: 0 };
+let followCmd = [0, 0], lastFrameT = 0, lastProcT = 0;
+let errF = null, prevErrF = null, lastSeenT = -1e9, lastErrSign = 1;
+let seq = 0, chain = Promise.resolve(); const sentAt = new Map();
+let aborted = false, busy = false;
+let lastVision = null, frameErrLogged = false;
+let fpsCount = 0, fpsT = performance.now(), wakeLock = null;
+const waiters = new Map(), early = new Map();
+
+function updateUI() {
+  $('btnHub').disabled = hubReady;
+  $('btnCam').textContent = camOn ? '② 카메라 끄기' : '② 카메라 켜기';
+  $('btnGo').disabled = !(hubReady && camOn) || busy;
+  $('btnGo').textContent = busy ? '동작 중…' : '▶ 미션 출발';
+  $('thrRow').style.display = cfg.thrAuto ? 'none' : '';
+  for (const b of document.querySelectorAll('[data-test]')) b.disabled = !hubReady || (busy && !(b.dataset.test === 'free' && mode === 'free'));
+}
+
+// ---------- hub link ----------
+function waitLine(key, ms) {
+  if (early.has(key)) { const v = early.get(key); early.delete(key); return Promise.resolve(v); }
+  return new Promise((res, rej) => {
+    const t = setTimeout(() => { waiters.delete(key); rej(new Error('허브 응답 시간 초과 (' + key + ')')); }, ms);
+    waiters.set(key, { res: (v) => { clearTimeout(t); res(v); }, rej: (e) => { clearTimeout(t); rej(e); } });
+  });
+}
+function gotLine(key, v) {
+  const w = waiters.get(key);
+  if (w) { waiters.delete(key); w.res(v); } else { early.set(key, v); if (early.size > 40) early.clear(); }
+}
+function onLine(line) {
+  const m = /^([ADLO])(-?\d+)(?: (-?\d+))?$/.exec(line);
+  if (m) {
+    const n = +m[2], arg = m[3];
+    if (m[1] === 'A') {
+      const t = sentAt.get(n);
+      if (t != null) { setText('stLat', Math.round(performance.now() - t) + ' ms'); sentAt.delete(n); }
+      if (sentAt.size > 60) sentAt.clear();
+    } else if (m[1] === 'D') gotLine('D' + n, arg);
+    else if (m[1] === 'O') odo = { leg: n, deg: +arg, t: performance.now() };
+    else if (m[1] === 'L') {
+      odo = { leg: n, deg: +arg, t: performance.now() };
+      if (fol && n === fol.leg) { const f = fol; fol = null; mode = 'idle'; f.resolve(+arg); }
+    }
+    return;
+  }
+  if (line.startsWith('READY')) { hubGrip = line.includes('NOGRIP') ? false : line.includes('GRIP'); gotLine('READY', line); }
+  else if (line === 'DEADMAN') log('명령이 끊겨서 허브가 스스로 멈췄어요');
+  else if (line === 'NO_WHEELS') log('A/B 포트에 모터가 없어요');
+  else if (line === 'BYE') { /* program ended on purpose */ }
+  else if (line) log('허브: ' + line);
+}
+
+function sendCmd(build) {         // serialized; build() runs when its turn comes, null = skip
+  const run = chain.then(async () => {
+    const s = build();
+    if (s == null) return null;
+    seq++;
+    sentAt.set(seq, performance.now());
+    await hub.writeFile(enc(`${seq} ${s};`), CMD_SLOT);
+    return seq;
+  });
+  chain = run.catch(() => {});
+  return run;
+}
+
+function hubCfg() { return { swap: cfg.swapLR ? 1 : 0, inv: cfg.invertFB ? 1 : 0, grip: mcfg.gripPort || '', wheel: WHEEL_MM, track: mcfg.track }; }
+
+async function loadProgram() {    // (re)upload the hub program when its settings changed
+  const want = JSON.stringify(hubCfg());
+  if (hubReady && loadedCfg === want) return;
+  reloading = true;
+  try {
+    if (hubReady) { hubReady = false; await sendCmd(() => 'Q'); await C.sleep(700); }
+    else {                                         // a stale program may still be running in the slot
+      try { await hub.request(Uint8Array.of(C.MSG.FLOW_REQ, 1, PROG_SLOT), C.MSG.FLOW_RESP, 1500); } catch (e) {}
+      await C.sleep(300);
+    }
+    await loadProgramInner(want);
+  } finally { reloading = false; }
+  updateUI();
+}
+async function loadProgramInner(want) {
+  setText('stHub', '프로그램 올리는 중…');
+  let src = await (await fetch('hub_mission.py')).text();
+  if (!/^CFG = .*$/m.test(src)) throw new Error('hub_mission.py 형식이 달라요');
+  src = src.replace(/^CFG = .*$/m, 'CFG = ' + want);
+  early.delete('READY');
+  await hub.writeFile(enc('0 S;'), CMD_SLOT);
+  await hub.uploadProgram(enc(src), PROG_SLOT);
+  await hub.startProgram(PROG_SLOT);
+  await waitLine('READY', 6000);
+  hubReady = true; loadedCfg = want;
+  setText('stHub', '연결됨' + (hub.device.name ? ` (${hub.device.name})` : '') + (hubGrip ? ' · 집게 ' + mcfg.gripPort : ' · 집게 없음'));
+  log(`허브 프로그램 시작 (바퀴간격 ${mcfg.track}mm, 집게 ${hubGrip ? mcfg.gripPort : '없음'})`);
+  senderLoop();
+}
+
+async function connectHub() {
+  if (!navigator.bluetooth) { log('이 브라우저는 블루투스를 못 써요. 안드로이드 Chrome에서 열어주세요.'); return; }
+  try {
+    if (!hub || !hub.connected) {
+      hub = new C.SpikeHub({
+        onLine,
+        onDisconnect: () => { hubReady = false; loadedCfg = null; log('⚠ 허브 연결이 끊겼어요'); cancelPending('허브 연결이 끊겼어요'); setText('stHub', '연결 끊김'); updateUI(); },
+        onProgramEnd: () => { if (reloading) return; hubReady = false; loadedCfg = null; log('⚠ 허브 프로그램이 끝났어요'); cancelPending('허브 프로그램이 끝났어요'); setText('stHub', '프로그램 종료됨'); updateUI(); },
+      });
+      setText('stHub', '연결 중…');
+      const info = await hub.connect();
+      log(`연결: ${hub.device.name || '(이름 없음)'} · 펌웨어 ${info.firmware}`);
+    }
+    await loadProgram();
+  } catch (e) {
+    reloading = false;
+    log('허브 연결 실패: ' + e.message);
+    setText('stHub', hub && hub.connected ? '연결됨 (프로그램 없음)' : '연결 안 됨');
+  }
+  updateUI();
+}
+
+function desired(now) {
+  if (mode === 'follow' && fol) {
+    if (now - lastFrameT > 400) return [0, 0, fol.leg, fol.limitDeg];      // camera stalled
+    return [followCmd[0], followCmd[1], fol.leg, fol.limitDeg];
+  }
+  if (mode === 'free') return now - lastFrameT > 400 ? [0, 0, legId, 0] : [followCmd[0], followCmd[1], legId, 0];
+  return [0, 0, legId, 0];
+}
+
+async function senderLoop() {
+  if (senderRunning) return;
+  senderRunning = true;
+  let last = '', lastT = 0;
+  try {
+    while (hub && hub.connected && hubReady) {
+      const now = performance.now();
+      if (mode === 'action') { last = ''; await C.sleep(20); continue; }
+      const d = desired(now), s = `V ${d[0]} ${d[1]} ${d[2]} ${d[3]}`;
+      const moving = d[0] !== 0 || d[1] !== 0;
+      if ((s !== last && now - lastT >= 60) || (moving && now - lastT >= 250)) {
+        const sent = await sendCmd(() => (mode === 'action' || !hubReady ? null : s));
+        if (sent != null) { last = s; lastT = performance.now(); }
+      } else await C.sleep(15);
+    }
+  } catch (e) {
+    log('⚠ 전송 오류: ' + e.message);
+    cancelPending('전송 오류: ' + e.message);
+  }
+  senderRunning = false;
+}
+
+// ---------- motion primitives ----------
+async function action(str, ms = 9000) {      // M / T / G / S: the hub does it by itself and reports "D"
+  if (aborted) throw new Error('정지됨');
+  mode = 'action';
+  let r;
+  try {
+    const s = await sendCmd(() => str);
+    r = await waitLine('D' + s, ms);
+  } finally { if (mode === 'action') mode = 'idle'; }       // also on timeout / link drop
+  if (r !== '1') throw new Error('동작이 중간에 멈췄어요 (' + str + ')');
+}
+
+/** Follow the line for lenMm (hub stops by wheel odometry). resync: when the leg's final
+ *  crossing passes the yellow baseline where odometry expects it, re-measure the rest from the camera.
+ *  resync 'any': stop at the first crossing seen (test). Resolves {travelMm, resyncAt, lost, seen}. */
+function followLeg(lenMm, opt = {}) {
+  if (aborted) return Promise.reject(new Error('정지됨'));
+  legId++;
+  const f = { leg: legId, lenMm, limitDeg: Math.max(1, Math.round(lenMm * DEG_PER_MM)), resync: opt.resync || false,
+    speed: opt.speed || cfg.speed, finishing: false, prevRow: null, seen: 0, lost: 0, resyncAt: null, rowAt: null };
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { if (fol === f) { fol = null; mode = 'idle'; } reject(new Error('구간 시간 초과')); }, 6000 + lenMm * 60);
+    f.resolve = (deg) => { clearTimeout(timer); resolve({ travelMm: Math.round(deg / DEG_PER_MM), resyncAt: f.resyncAt, rowAt: f.rowAt, lost: f.lost, seen: f.seen }); };
+    f.reject = (e) => { clearTimeout(timer); reject(e); };
+    errF = prevErrF = null; followCmd = [0, 0];
+    odo = { leg: f.leg, deg: 0, t: performance.now() };
+    fol = f; mode = 'follow';
+  });
+}
+function odoMm(f) {
+  if (odo.leg !== f.leg) return 0;
+  const dt = Math.min(0.4, (performance.now() - odo.t) / 1000);
+  return (odo.deg + dt * f.speed) / DEG_PER_MM;
+}
+function followTick(det, cr, dt) {
+  const f = fol;
+  let left = f.speed, right = f.speed;
+  if (det.found) {
+    errF = errF == null ? det.error : errF * 0.4 + det.error * 0.6;
+    const out = C.control(errF, prevErrF, dt, Object.assign({}, cfg, { speed: f.speed }));
+    prevErrF = errF; left = out.left; right = out.right; f.seen++;
+  } else { errF = prevErrF = null; f.lost++; }           // no line (junction / object): keep going straight
+  followCmd = C.toPorts(left, right, cfg);
+  if (!f.resync || f.finishing) return;
+  const row = cr && cr.present ? cr.row : null;
+  const base = mcfg.baseRow;
+  const travel = odoMm(f), expect = f.lenMm - mcfg.camOffset;
+  const inWindow = f.resync === 'any' ? true : (expect >= 0 && Math.abs(travel - expect) <= RESYNC_TOL);
+  if (row != null && inWindow) {
+    const crossed = (f.prevRow != null && f.prevRow < base && row >= base) || (f.prevRow == null && row >= base && row <= base + 0.06);
+    if (crossed) {
+      const latMm = (f.speed / DEG_PER_MM) * 0.12;       // distance covered before the hub hears about it
+      f.finishing = true; f.resyncAt = Math.round(travel); f.rowAt = +row.toFixed(2);
+      legId++; f.leg = legId;
+      f.limitDeg = Math.max(1, Math.round((mcfg.camOffset - latMm) * DEG_PER_MM));
+      odo = { leg: f.leg, deg: 0, t: performance.now() };
+    }
+  }
+  f.prevRow = row;
+}
+function freeTick(det, dt) {                 // plain line following (search when lost, then stop)
+  if (det.found) {
+    errF = errF == null ? det.error : errF * 0.4 + det.error * 0.6;
+    const out = C.control(errF, prevErrF, dt, cfg);
+    prevErrF = errF; lastSeenT = lastFrameT;
+    if (errF !== 0) lastErrSign = Math.sign(errF);
+    followCmd = C.toPorts(out.left, out.right, cfg);
+  } else {
+    errF = prevErrF = null;
+    if (lastFrameT - lastSeenT < 1000) { const sp = cfg.speed * 0.4 * (cfg.steerInvert ? -lastErrSign : lastErrSign); followCmd = C.toPorts(sp, -sp, cfg); }
+    else followCmd = [0, 0];
+  }
+}
+
+/** A failure (link drop, hub program died): fail whatever is waiting; the mission may recover and go on. */
+function cancelPending(reason) {
+  if (fol) { const f = fol; fol = null; f.reject(new Error(reason)); }
+  for (const w of [...waiters.values()]) w.rej(new Error(reason));
+  waiters.clear();
+  mode = 'idle';
+}
+/** A deliberate stop (정지 button, page hidden, camera off): nothing continues after this. */
+function abortAll(reason) {
+  aborted = true;
+  cancelPending(reason);
+  if (hub && hub.connected && hubReady) sendCmd(() => 'S').catch(() => {});
+  releaseWake();
+  updateUI();
+}
+
+/** Bring the link + hub program back after a failure. true = OK to continue. */
+async function recover() {
+  if (aborted || !hub) return false;
+  for (let k = 0; k < 5 && !hub.connected && !aborted; k++) {
+    log(`  블루투스 재연결 시도 ${k + 1}/5`);
+    try { await hub.reconnect(); } catch (e) { await C.sleep(900); }
+  }
+  if (!hub.connected || aborted) return false;
+  try { await loadProgram(); } catch (e) { log('  허브 프로그램 재시작 실패: ' + e.message); return false; }
+  return !aborted;
+}
+
+/** After a turn: look at the line ahead and trim the heading by a few degrees (max ±20° in total). */
+async function alignToLine() {
+  if (!camOn) return '';
+  let total = 0;
+  for (let k = 0; k < 3; k++) {
+    await C.sleep(230);                                    // let the robot settle + get a fresh frame
+    const v = lastVision;
+    if (!v || performance.now() - v.t > 300 || !v.det.found) return total ? ` · 선 정렬 ${total > 0 ? '+' : ''}${total}°` : ' · 선 안 보여 정렬 생략';
+    const e = v.det.error * (cfg.steerInvert ? -1 : 1);
+    if (Math.abs(e) < 0.12) break;
+    let deg = Math.round(Math.max(-12, Math.min(12, e * 15)));
+    deg = Math.max(-20 - total, Math.min(20 - total, deg));
+    if (!deg) break;
+    await action(`T ${deg} ${Math.min(mcfg.turnSpeed, 120)}`);
+    total += deg;
+  }
+  return total ? ` · 선 정렬 ${total > 0 ? '+' : ''}${total}°` : ' · 정렬 불필요';
+}
+
+const closeDir = () => (mcfg.gripInvert ? 1 : -1);
+async function gripper(close) {
+  if (!hubGrip) { log('집게 없음: 건너뜀'); return; }
+  await action(`G ${close ? closeDir() : -closeDir()} ${GRIP_SPEED} ${close ? 1 : 0} ${close ? 0 : mcfg.gripOpenDeg}`, 6000);
+}
+
+async function begin(what) {
+  if (busy) throw new Error('이미 동작 중이에요');
+  if (!hub || !hub.connected) throw new Error('먼저 허브를 연결하세요');
+  busy = true; aborted = false; updateUI();
+  await loadProgram();
+  requestWake();
+  log('▶ ' + what);
+}
+function finish() { busy = false; if (mode !== 'idle') mode = 'idle'; releaseWake(); updateUI(); }
+const fmtLeg = (r, len) => (r.resyncAt != null
+  ? `교차로를 ${r.resyncAt}mm 지점에서 봄 (예상 ${Math.round(len - mcfg.camOffset)}mm, 화면 ${Math.round(r.rowAt * 100)}%) + ${r.travelMm}mm 더 감`
+  : `바퀴 기준 ${r.travelMm}mm 이동 (목표 ${Math.round(len)}mm, 교차로 보정 없음)`) + `, 선 놓침 ${r.lost}/${r.lost + r.seen}프레임`;
+
+async function runTest(kind) {
+  if (kind === 'free' && mode === 'free') { abortAll('선 따라가기 끝'); log('■ 선 따라가기 끝'); finish(); return; }
+  try {
+    await begin('테스트: ' + ({ cross: '다음 모서리·교차로까지', right: '오른쪽 90°', left: '왼쪽 90°', fwd: '200mm 직진', back: '200mm 후진', free: '선만 따라가기', close: '집게 닫기', open: '집게 열기', uturn: '180° 회전' })[kind]);
+    if (kind === 'cross') {
+      if (!camOn) throw new Error('카메라를 켜세요');
+      const r = await followLeg(2000, { resync: 'any' });
+      log(r.resyncAt != null ? `  교차로 발견(${r.resyncAt}mm 지점) → ${r.travelMm}mm 더 가서 정지. 바퀴 축이 모서리 위에 있으면 "카메라 거리" ${mcfg.camOffset}mm가 맞아요. 못 미쳤으면 올리고, 지나쳤으면 내리세요.`
+        : `  교차로를 못 보고 ${r.travelMm}mm 가서 멈춤 (선 놓침 ${r.lost}/${r.lost + r.seen})`);
+    } else if (kind === 'right' || kind === 'left' || kind === 'uturn') {
+      const deg = kind === 'right' ? 90 : kind === 'left' ? -90 : 180;
+      await action(`T ${deg} ${mcfg.turnSpeed}`);
+      log(`  ${deg}° 회전 끝 (바퀴간격 ${mcfg.track}mm). 덜 돌았으면 "회전 보정"을 올리고, 더 돌았으면 내리세요.`);
+    } else if (kind === 'fwd' || kind === 'back') {
+      await action(`M ${kind === 'fwd' ? 200 : -200} ${cfg.speed}`);
+      log('  200mm 이동 끝. 자로 재서 다르면 알려주세요.');
+    } else if (kind === 'close' || kind === 'open') {
+      await gripper(kind === 'close');
+      log('  집게 동작 끝');
+    } else if (kind === 'free') {
+      if (!camOn) throw new Error('카메라를 켜세요');
+      legId++; lastSeenT = performance.now(); errF = prevErrF = null; followCmd = [0, 0];
+      mode = 'free'; updateUI();
+      return;                                  // keeps running until the button / 정지 is pressed
+    }
+  } catch (e) { log('  ✖ ' + e.message); if (!aborted) abortAll(e.message); }
+  finish();
+}
+
+async function runMission() {
+  const { T, targets, plan } = currentPlan();
+  if (!targets.length) { log('목표가 없어요: 지도에 물체를 놓고 순서를 누르세요'); return; }
+  if (plan.error) { log('계획 실패: ' + plan.error); return; }
+  const t0 = performance.now();
+  try {
+    await begin(`미션 출발: ${mcfg.map === 'comp' ? '대회 지도' : `연습 트랙 ${mcfg.pw}×${mcfg.ph1}+${mcfg.ph2}cm`}, 목표 ${targets.map((id) => `${id}@${T.objects.find((o) => o.id === id).node}`).join(' → ')}`);
+    log(settingsLine());
+    if (hubGrip) await gripper(false);
+    let first = true;
+    let failed = 0;
+    for (let i = 0; i < plan.steps.length; i++) {
+      const st = plan.steps[i], ts = performance.now(), next = plan.steps[i + 1];
+      renderPlan(i);
+      let note = '';
+      try {
+        if (st.op === 'leg') {
+          const len = st.len + (first ? mcfg.startBack : 0);
+          const r = await followLeg(len, { resync: true });
+          note = fmtLeg(r, len);
+          if (r.seen < 3 && r.lost > 10) note += ' ⚠ 선을 거의 못 봤어요';
+        } else if (st.op === 'turn') {
+          await action(`T ${st.deg} ${mcfg.turnSpeed}`);
+          if (next && (next.op === 'leg' || (next.op === 'move' && next.mm > 0))) note = (await alignToLine()).replace(/^ · /, '');
+        } else if (st.op === 'move') {
+          if (st.mm > 0) note = fmtLeg(await followLeg(st.mm, { resync: false, speed: Math.min(cfg.speed, 150) }), st.mm);
+          else if (st.mm < 0) await action(`M ${st.mm} ${Math.min(cfg.speed, 200)}`);
+        } else if (st.op === 'grip') await gripper(true);
+        else if (st.op === 'release') await gripper(false);
+      } catch (e) {
+        if (aborted) throw e;                              // deliberate stop
+        failed++;
+        log(`  ⚠ ${i + 1}/${plan.steps.length} ${M.describe(st)} 실패: ${e.message}`);
+        if (!(await recover())) throw new Error('복구하지 못했어요 (' + e.message + ')');
+        if (st.op === 'grip' || st.op === 'release') {     // gripping again is harmless: one more try
+          try { await gripper(st.op === 'grip'); log('    집게 재시도 성공'); } catch (e2) { if (aborted) throw e2; log('    집게 재시도도 실패: ' + e2.message); await recover(); }
+        }
+        log('    → 다음 단계로 계속');
+        first = false;
+        continue;
+      }
+      first = false;
+      log(`  ${i + 1}/${plan.steps.length} ${M.describe(st)}${note ? ' → ' + note : ''} [${((performance.now() - ts) / 1000).toFixed(1)}s]`);
+    }
+    log(`${failed ? '△' : '✔'} 미션 끝${failed ? ` (실패한 단계 ${failed}개)` : ''} · ${((performance.now() - t0) / 1000).toFixed(1)}초`);
+  } catch (e) { log(`✖ 미션 중단: ${e.message} (${((performance.now() - t0) / 1000).toFixed(1)}초)`); if (!aborted) abortAll(e.message); }
+  finish();
+  renderPlan();
+}
+window.addEventListener('unhandledrejection', (e) => { log('⚠ 처리 안 된 오류: ' + (e.reason && e.reason.message || e.reason)); });
+window.addEventListener('error', (e) => { log('⚠ 스크립트 오류: ' + e.message); });
+
+// ---------- camera + vision ----------
+const video = $('video'), view = $('view'), proc = $('proc'), ov = $('ov');
+const vctx = view.getContext('2d'), pctx = proc.getContext('2d', { willReadFrequently: true }), octx = ov.getContext('2d');
+
+async function toggleCam() {
+  if (camOn) {
+    camOn = false; if (busy) abortAll('카메라를 꺼서 멈췄어요');
+    stream && stream.getTracks().forEach((t) => t.stop());
+    setText('stCam', '꺼짐'); setText('lineinfo', '카메라 꺼짐'); updateUI();
+    return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+    camOn = true; setText('stCam', '켜짐');
+    requestAnimationFrame(frameLoop);
+  } catch (e) { log('카메라 실패: ' + e.message); }
+  updateUI();
+}
+
+function frameLoop(ts) {
+  if (!camOn) return;
+  requestAnimationFrame(frameLoop);
+  if (ts - lastProcT < 60) return;
+  try { processFrame(ts); }
+  catch (e) { if (!frameErrLogged) { frameErrLogged = true; log('⚠ 화면 처리 오류: ' + e.message); } }
+}
+function processFrame(ts) {
+  const dt = lastProcT ? ts - lastProcT : 66;
+  lastProcT = ts;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || video.readyState < 2) return;
+  const s = 160 / Math.max(vw, vh), W = Math.round(vw * s), H = Math.round(vh * s);
+  if (proc.width !== W || proc.height !== H) { proc.width = ov.width = W; proc.height = ov.height = H; }
+  pctx.drawImage(video, 0, 0, W, H);
+  const gray = M.tapeGray(pctx.getImageData(0, 0, W, H).data, W * H, 70);   // colourful things (objects) become white
+  const det = C.detectLine(gray, W, H, { roiTop: cfg.roiTop, threshold: cfg.thrAuto ? null : cfg.thr, maxRunFrac: 0.3 });
+  const usable = det.reason !== 'low-contrast' && det.reason !== 'too-dark';
+  const cr = usable ? M.detectCrossing(gray, W, H, { roiTop: cfg.roiTop, thr: det.thr }) : null;
+  lastFrameT = performance.now();
+  lastVision = { det, cr, t: lastFrameT };
+  if (mode === 'follow' && fol) followTick(det, cr, dt);
+  else if (mode === 'free') freeTick(det, dt);
+  draw(det, cr, gray, W, H);
+  setText('lineinfo', (det.found ? `선 ${Math.round(det.error * 100)}` : '선 없음') + (cr && cr.present ? ` · 가로줄 ${Math.round(cr.row * 100)}%` : '') +
+    (fol ? ` · ${Math.round(odoMm(fol))}/${fol.finishing ? mcfg.camOffset : fol.lenMm}mm` : ''));
+  fpsCount++;
+  const now = performance.now();
+  if (now - fpsT > 1000) { setText('stFps', fpsCount + ' fps'); fpsCount = 0; fpsT = now; }
+}
+
+function draw(det, cr, gray, W, H) {
+  const cw = view.clientWidth || 320, dpr = window.devicePixelRatio || 1;
+  const w = Math.round(cw * dpr), h = Math.round(cw * dpr * H / W);
+  if (view.width !== w || view.height !== h) { view.width = w; view.height = h; }
+  vctx.drawImage(video, 0, 0, w, h);
+  const img = octx.createImageData(W, H), d = img.data;
+  for (let y = det.y0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x;
+    if (gray[i] < det.thr) { const k = i * 4; d[k] = 255; d[k + 1] = 40; d[k + 2] = 40; d[k + 3] = 110; }
+  }
+  octx.putImageData(img, 0, 0);
+  vctx.imageSmoothingEnabled = false;
+  vctx.drawImage(ov, 0, 0, w, h);
+  const sx = w / W, sy = h / H;
+  vctx.lineWidth = 2 * dpr;
+  vctx.strokeStyle = 'rgba(255,255,255,.5)';
+  vctx.beginPath(); vctx.moveTo(0, det.y0 * sy); vctx.lineTo(w, det.y0 * sy); vctx.stroke();
+  vctx.strokeStyle = '#ffd54a';                                         // baseline used for crossings
+  vctx.beginPath(); vctx.moveTo(0, mcfg.baseRow * h); vctx.lineTo(w, mcfg.baseRow * h); vctx.stroke();
+  if (cr) for (const b of cr.bands) {
+    vctx.strokeStyle = '#4ad7ff';
+    vctx.beginPath(); vctx.moveTo(0, b.row * h); vctx.lineTo(w, b.row * h); vctx.stroke();
+  }
+  for (const b of det.bands) {
+    if (b.cx == null) continue;
+    vctx.fillStyle = '#3fe07a';
+    vctx.beginPath(); vctx.arc((b.cx + 0.5) * sx, ((b.ya + b.yb) / 2) * sy, 6 * dpr, 0, Math.PI * 2); vctx.fill();
+  }
+  if (busy) { vctx.fillStyle = 'rgba(46,157,91,.9)'; vctx.fillRect(0, h - 6 * dpr, w, 6 * dpr); }
+}
+
+// ---------- buttons ----------
+$('btnHub').addEventListener('click', connectHub);
+$('btnCam').addEventListener('click', toggleCam);
+$('btnGo').addEventListener('click', () => { if (hubReady && camOn && !busy) runMission(); });
+$('btnStop').addEventListener('click', () => { log('■ 정지 버튼'); abortAll('정지 버튼'); finish(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden && busy) { log('화면을 벗어나서 멈췄어요'); abortAll('화면을 벗어남'); finish(); } });
+
+async function requestWake() { try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {} }
+function releaseWake() { try { wakeLock && wakeLock.release(); } catch (e) {} wakeLock = null; }
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+renderMap();
+updateUI();
+log('준비됨. ① 허브 연결 → ② 카메라 → 지도에서 출발·물체 지정 → ▶ 미션 출발');
+</script>
+</body>
+</html>
