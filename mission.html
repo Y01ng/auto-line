@@ -197,6 +197,11 @@ if (!(mcfg.ver >= 4)) {            // user asked for more speed
   if (mcfg.turnSpeed < 250) mcfg.turnSpeed = 250;
   mcfg.ver = 4; saveM();
 }
+if (!(mcfg.ver >= 5)) {            // short grid cells: steer gently, by the part of the line nearest to the robot
+  if (cfg.kp > 0.6) { cfg.kp = 0.6; saveCfg(); }
+  mcfg.ver = 5; saveM();
+}
+const STEER_ROI = 0.6;             // steering only looks at the image below this height (crossings still use the full "보는 영역")
 
 function bindRange(obj, save, id, valId, fmt, after) {
   const el = $(id);
@@ -847,7 +852,7 @@ function processFrame(ts) {
     thr = Math.min(thr, Math.round(white * 0.5));
   }
   let det;
-  if (usable) det = M.trackLine(gray, W, H, thr, lineSt, { roiTop: cfg.roiTop, gateMax: 0.5, gateGrow: 0.06 });
+  if (usable) det = M.trackLine(gray, W, H, thr, lineSt, { roiTop: Math.max(cfg.roiTop, STEER_ROI), gateMax: 0.5, gateGrow: 0.06 });
   else { lineSt.age = (lineSt.age || 0) + 1; det = { found: false, error: 0, thr, y0: base.y0, bands: [], reason: base.reason }; }
   const cr = usable ? M.detectCrossing(gray, W, H, { roiTop: cfg.roiTop, thr, minRows: Math.max(2, Math.round((lineSt.w || 6) * 0.4)) }) : null;
   lastFrameT = performance.now();
