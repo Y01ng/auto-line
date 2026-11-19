@@ -248,27 +248,45 @@
       });
     }
 
-    /** Upload a SPIKE-3 Python program (bytes) to `slot`. */
-    async uploadProgram(code, slot) {
-      await this.request(Uint8Array.of(MSG.CLEAR_REQ, slot), MSG.CLEAR_RESP); // NACK if empty: fine
-      let r = await this.request(msgStartUpload('program.py', slot, crc32Padded(code)), MSG.UPLOAD_RESP);
-      if (r[1] !== 0) throw new Error('허브가 업로드를 거부했어요');
-      let running = 0;
-      for (let i = 0; i < code.length; i += this.maxChunk) {
-        const chunk = code.subarray(i, i + this.maxChunk);
-        running = crc32Padded(chunk, running);
-        r = await this.request(msgChunk(running, chunk), MSG.CHUNK_RESP);
-        if (r[1] !== 0) throw new Error('허브가 데이터 조각을 거부했어요 (' + i + ')');
+    /** The hub occasionally rejects a transfer (seen once right after power-on): try again a couple
+     *  of times. Only rejections are retried - timeouts / link drops fail straight away. */
+    async _retry(fn, tries) {
+      for (let k = 1; ; k++) {
+        try { return await fn(); }
+        catch (e) {
+          if (!e.rejected || k >= tries || !this.connected) throw e;
+          await sleep(120);
+        }
       }
     }
 
+    /** Upload a SPIKE-3 Python program (bytes) to `slot`. */
+    uploadProgram(code, slot) {
+      const rejected = (m) => Object.assign(new Error(m), { rejected: true });
+      return this._retry(async () => {
+        await this.request(Uint8Array.of(MSG.CLEAR_REQ, slot), MSG.CLEAR_RESP); // NACK if empty: fine
+        let r = await this.request(msgStartUpload('program.py', slot, crc32Padded(code)), MSG.UPLOAD_RESP);
+        if (r[1] !== 0) throw rejected('허브가 업로드를 거부했어요');
+        let running = 0;
+        for (let i = 0; i < code.length; i += this.maxChunk) {
+          const chunk = code.subarray(i, i + this.maxChunk);
+          running = crc32Padded(chunk, running);
+          r = await this.request(msgChunk(running, chunk), MSG.CHUNK_RESP);
+          if (r[1] !== 0) throw rejected('허브가 데이터 조각을 거부했어요 (' + i + ')');
+        }
+      }, 3);
+    }
+
     /** Fast overwrite of a tiny file (the command channel). ~50-150 ms. */
-    async writeFile(bytes, slot) {
+    writeFile(bytes, slot) {
+      const rejected = (m) => Object.assign(new Error(m), { rejected: true });
       const crc = crc32Padded(bytes);
-      let r = await this.request(msgStartUpload('program.py', slot, crc), MSG.UPLOAD_RESP);
-      if (r[1] !== 0) throw new Error('명령 업로드 거부');
-      r = await this.request(msgChunk(crc, bytes), MSG.CHUNK_RESP);
-      if (r[1] !== 0) throw new Error('명령 조각 거부');
+      return this._retry(async () => {
+        let r = await this.request(msgStartUpload('program.py', slot, crc), MSG.UPLOAD_RESP);
+        if (r[1] !== 0) throw rejected('명령 업로드 거부');
+        r = await this.request(msgChunk(crc, bytes), MSG.CHUNK_RESP);
+        if (r[1] !== 0) throw rejected('명령 조각 거부');
+      }, 3);
     }
 
     async startProgram(slot) {

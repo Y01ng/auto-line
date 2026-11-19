@@ -18,7 +18,7 @@ import time
 
 CMD_FILE = "/flash/program/18/program.py"
 # >>> CONFIG: the phone page rewrites the next line before uploading >>>
-CFG = {"swap": 0, "inv": 0, "grip": "", "wheel": 56, "track": 128}
+CFG = {"swap": 0, "inv": 0, "grip": "auto", "wheel": 56, "track": 128}
 DEADMAN_MS = 700
 MAX_SPEED = 1000
 MOTOR_IDS = (48, 49, 65, 75, 76)
@@ -135,13 +135,21 @@ async def main():
         light_matrix.show_image(light_matrix.IMAGE_NO)
         print("NO_WHEELS")
         return
-    grip = PORTS.get(CFG["grip"])
-    if grip is not None and not has_motor(grip):
-        grip = None
+    gname = CFG["grip"]          # "auto" = first motor found on C..F, "" = none, or a port letter
+    grip = None
+    if gname == "auto":
+        for n in ("C", "D", "E", "F"):
+            if has_motor(PORTS[n]):
+                gname, grip = n, PORTS[n]
+                break
+    else:
+        grip = PORTS.get(gname)
+        if grip is not None and not has_motor(grip):
+            grip = None
     light_matrix.show_image(light_matrix.IMAGE_HAPPY)
     await sound.beep(660, 80, 50)
     await sound.beep(880, 80, 50)
-    print("READY " + ("GRIP" if grip is not None else "NOGRIP"))
+    print("READY " + ("GRIP " + gname if grip is not None else "NOGRIP"))
 
     vcmd = (0, 0)
     applied = (0, 0)
